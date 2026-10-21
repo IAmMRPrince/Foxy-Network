@@ -1,0 +1,13 @@
+{
+  "name": "foxy-gateway",
+  "version": "0.1.0",
+  "description": "Foxy Network Public Ingress Gateway & Multiplexed Reverse Tunnel Server",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

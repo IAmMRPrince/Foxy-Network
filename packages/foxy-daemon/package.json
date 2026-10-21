@@ -1,0 +1,13 @@
+{
+  "name": "foxy-daemon",
+  "version": "0.1.0",
+  "description": "Foxy Network Donor Desktop Daemon & Workload Runner",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

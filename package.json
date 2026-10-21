@@ -1,0 +1,27 @@
+{
+  "name": "foxy-network",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Foxy Network - Decentralized Cloud Server Network & DePIN Engine",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "node scripts/start-all.js",
+    "donor": "npm --workspace=foxy-daemon start",
+    "start:gateway": "npm --workspace=foxy-gateway start",
+    "start:controller": "npm --workspace=foxy-controller start",
+    "start:daemon": "npm --workspace=foxy-daemon start",
+    "start:all": "node scripts/start-all.js"
+  },
+  "keywords": [
+    "depin",
+    "decentralized-cloud",
+    "reverse-tunnel",
+    "edge-compute",
+    "foxy-network"
+  ],
+  "author": "Foxy Network Contributors",
+  "license": "Apache-2.0"
+}

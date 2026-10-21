@@ -1,0 +1,23 @@
+{
+  "networkName": "Foxy Network DePIN Cluster",
+  "version": "0.1.0",
+  "gateway": {
+    "tunnelUrl": "ws://127.0.0.1:8081",
+    "httpPort": 8080
+  },
+  "controller": {
+    "url": "http://127.0.0.1:4000"
+  },
+  "donor": {
+    "dashboardPort": 4040,
+    "autoDonateOnLaunch": true,
+    "defaultQuota": {
+      "maxCpuCores": 2,
+      "maxRamMb": 2048,
+      "maxStorageGb": 10
+    }
+  },
+  "security": {
+    "clusterSecret": "foxy-depin-cluster-shared-secret-v1"
+  }
+}

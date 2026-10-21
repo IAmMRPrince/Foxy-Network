@@ -1,0 +1,12 @@
+{
+  "name": "foxy-cli",
+  "version": "0.1.0",
+  "description": "Foxy Network Developer CLI",
+  "type": "module",
+  "bin": {
+    "foxy": "./bin/foxy.js"
+  },
+  "scripts": {
+    "start": "node bin/foxy.js"
+  }
+}

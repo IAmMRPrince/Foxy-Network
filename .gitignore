@@ -1,0 +1,31 @@
+# Node & Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Environment & Local Secrets
+.env
+.env.local
+.env.*.local
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+*.lnk
+.vscode/
+.idea/
+
+# Logs & Temporary Files
+logs/
+*.log
+*.pid
+*.seed
+*.sublime-project
+*.sublime-workspace
+
+# Build & Dist
+dist/
+build/
+coverage/

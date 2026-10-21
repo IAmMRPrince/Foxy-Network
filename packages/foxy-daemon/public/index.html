@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🦊 Foxy Daemon — Panel del Nodo Donante</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #070a12;
+      --card-bg: rgba(18, 24, 38, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #ff6b35;
+      --accent-glow: rgba(255, 107, 53, 0.35);
+      --cyan: #00f2fe;
+      --gold: #f59e0b;
+      --gold-glow: rgba(245, 158, 11, 0.35);
+      --text: #f1f5f9;
+      --text-muted: #8494b2;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: radial-gradient(circle at 10% 5%, #18223c 0%, var(--bg) 60%),
+                  radial-gradient(circle at 90% 95%, #231230 0%, var(--bg) 70%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container { width: 100%; max-width: 1060px; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.25rem 2rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-icon {
+      font-size: 2.2rem;
+      filter: drop-shadow(0 2px 8px var(--accent-glow));
+    }
+    .brand-text h1 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
+    .brand-text span { color: var(--accent); }
+    .brand-text p { font-size: 0.85rem; color: var(--text-muted); }
+
+    .node-status-bar {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: var(--success);
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 10px currentColor;
+    }
+
+    .engine-banner {
+      background: linear-gradient(90deg, rgba(255, 107, 53, 0.12), rgba(0, 242, 254, 0.08));
+      border: 1px solid rgba(255, 107, 53, 0.25);
+      border-radius: 12px;
+      padding: 0.9rem 1.5rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .engine-title { font-size: 0.95rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .engine-badge {
+      font-size: 0.8rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: rgba(0, 242, 254, 0.15);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 242, 254, 0.3);
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 52px;
+      height: 28px;
+    }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #334155;
+      transition: .3s;
+      border-radius: 34px;
+    }
+    .slider:before {
+      position: absolute; content: ""; height: 20px; width: 20px; left: 4px; bottom: 4px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+    input:checked + .slider { background-color: var(--accent); }
+    input:checked + .slider:before { transform: translateX(24px); }
+
+    /* Tokenomics Card Highlight */
+    .tokenomics-card {
+      background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(18, 24, 38, 0.95));
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      border-radius: 16px;
+      padding: 1.5rem 2rem;
+      margin-bottom: 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 10px 35px rgba(245, 158, 11, 0.1);
+    }
+    .token-balance-box { display: flex; align-items: baseline; gap: 10px; margin: 0.4rem 0; }
+    .token-balance { font-size: 2.8rem; font-weight: 800; color: var(--gold); letter-spacing: -0.02em; }
+    .token-symbol { font-size: 1.4rem; font-weight: 700; color: #fde68a; }
+    .tier-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      background: rgba(245, 158, 11, 0.2);
+      color: var(--gold);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      margin-left: 8px;
+    }
+
+    .grid-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 107, 53, 0.3);
+    }
+    .card-label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+    .card-value {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+    .card-subtext {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 0.35rem;
+    }
+
+    .section-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.8rem 0.6rem; border-bottom: 1px solid var(--card-border); }
+    th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .type-pill {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .type-python { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+    .type-node { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+    .type-docker { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+    .type-static { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+
+    .btn-action {
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      border: none;
+    }
+    .btn-stop { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .btn-open { background: rgba(255, 107, 53, 0.15); color: var(--accent); border: 1px solid rgba(255, 107, 53, 0.3); margin-right: 4px; }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    @media (max-width: 850px) {
+      .main-grid { grid-template-columns: 1fr; }
+      .tokenomics-card { flex-direction: column; align-items: flex-start; gap: 1rem; }
+    }
+
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.35rem; }
+    .form-control {
+      width: 100%;
+      background: #0b101c;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.9rem;
+    }
+    .form-control:focus { outline: none; border-color: var(--accent); }
+    .btn {
+      background: linear-gradient(135deg, var(--accent), #ff9f1c);
+      color: #fff;
+      border: none;
+      padding: 0.65rem 1.25rem;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 15px var(--accent-glow);
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.9; }
+
+    .btn-gold {
+      background: linear-gradient(135deg, var(--gold), #f97316);
+      color: #000;
+      font-weight: 800;
+      box-shadow: 0 4px 20px var(--gold-glow);
+      border: none;
+      padding: 0.75rem 1.6rem;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: transform 0.2s;
+    }
+    .btn-gold:hover { transform: translateY(-2px); }
+
+    .logs-console {
+      background: #050811;
+      border: 1px solid #1a2236;
+      border-radius: 12px;
+      padding: 1rem;
+      height: 250px;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+    }
+    .log-line {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      display: flex;
+      gap: 8px;
+    }
+    .log-time { color: #526385; }
+    .log-msg { color: #cbd5e1; }
+    .log-success .log-msg { color: #34d399; }
+    .log-warning .log-msg { color: #fbbf24; }
+    .log-error .log-msg { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-icon">🦊</div>
+        <div class="brand-text">
+          <h1>Foxy <span>Daemon</span></h1>
+          <p id="node-id-display">Cargando nodo...</p>
+        </div>
+      </div>
+      <div class="node-status-bar">
+        <div id="status-pill" class="status-pill">
+          <span class="status-dot"></span>
+          <span id="status-text">Conectando Túnel...</span>
+        </div>
+        <label class="toggle-switch" title="Activar/Desactivar donación de recursos">
+          <input type="checkbox" id="donation-toggle" checked onchange="toggleDonation()">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </header>
+
+    <!-- Tokenomics Rewards Banner -->
+    <div class="tokenomics-card">
+      <div>
+        <div style="font-size:0.85rem; text-transform:uppercase; font-weight:700; color:var(--gold); letter-spacing:0.05em">
+          🪙 Recompensas de Cómputo Donado <span id="tier-display" class="tier-badge">STANDARD (1.0x)</span>
+        </div>
+        <div class="token-balance-box">
+          <span class="token-balance" id="val-foxy-balance">0.0000</span>
+          <span class="token-symbol">$FOXY</span>
+        </div>
+        <div style="font-size:0.85rem; color:var(--text-muted)">
+          Ganancias Totales: <strong style="color:var(--text)" id="val-foxy-lifetime">0.0000 $FOXY</strong> | 
+          Épocas Liquidadas: <span id="val-foxy-epochs">0</span>
+        </div>
+      </div>
+      <div>
+        <button class="btn-gold" onclick="claimRewards()">Reclamar Recompensas 💰</button>
+      </div>
+    </div>
+
+    <div class="engine-banner">
+      <div class="engine-title">
+        <span>⚙️ Motor de Ejecución:</span>
+        <span id="engine-name-display">Detectando runtime...</span>
+      </div>
+      <div class="engine-badge" id="engine-badge-display">OCI / Sandbox</div>
+    </div>
+
+    <div class="grid-metrics">
+      <div class="card">
+        <div class="card-label">Peticiones Servidas</div>
+        <div class="card-value" id="val-requests">0</div>
+        <div class="card-subtext">Tráfico procesado por el túnel</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Ancho de Banda Donado</div>
+        <div class="card-value" id="val-bandwidth">0 KB</div>
+        <div class="card-subtext">Transferido a clientes externos</div>
+      </div>
+      <div class="card">
+        <div class="card-label">CPU Ociosa / Asignada</div>
+        <div class="card-value" id="val-cpu">--</div>
+        <div class="card-subtext" id="val-cpu-desc">Detectando núcleos...</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Memoria RAM Libre</div>
+        <div class="card-value" id="val-ram">--</div>
+        <div class="card-subtext" id="val-ram-desc">Cuota asignada: 2048 MB</div>
+      </div>
+    </div>
+
+    <!-- Cargas de Trabajo Activas -->
+    <div class="card" style="margin-bottom: 2rem;">
+      <div class="section-title">
+        <span>📦 Servidores y Cargas de Trabajo Alojadas en este Nodo</span>
+        <span style="font-size:0.85rem; color:var(--text-muted)" id="workload-count">0 activas</span>
+      </div>
+      <div style="overflow-x: auto;">
+        <table id="workloads-table">
+          <thead>
+            <tr>
+              <th>Nombre</th>
+              <th>Tipo</th>
+              <th>Subdominio de Túnel</th>
+              <th>Puerto Local</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="workloads-tbody">
+            <tr><td colspan="6" style="text-align:center; color:var(--text-muted)">Cargando servicios activos...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="main-grid">
+      <!-- Izquierda: Despliegue Manual de Servicios -->
+      <div class="card">
+        <div class="section-title">
+          <span>🚀 Desplegar Nuevo Servicio en este Nodo</span>
+        </div>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem">
+          Inicia un microservicio que quedará disponible en Foxy Gateway a través del túnel inverso.
+        </p>
+
+        <form id="spawn-form" onsubmit="handleSpawnWorkload(event)">
+          <div class="form-group">
+            <label>Tipo de Carga / Sandbox:</label>
+            <select id="spawn-type" class="form-control">
+              <option value="python">Microservicio Python (Servidor HTTP Nativo)</option>
+              <option value="node">Servidor Node.js (API JSON)</option>
+              <option value="static">Aplicación Web Estática</option>
+              <option value="docker">Contenedor OCI (Docker / Podman)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Nombre de la Aplicación:</label>
+            <input type="text" id="spawn-name" class="form-control" placeholder="Mi Microservicio" required>
+          </div>
+          <div class="form-group">
+            <label>Subdominio de Acceso:</label>
+            <input type="text" id="spawn-subdomain" class="form-control" placeholder="mi-servicio-app" required>
+          </div>
+          <button type="submit" class="btn" style="width:100%">Desplegar & Publicar en el Túnel ⚡</button>
+        </form>
+      </div>
+
+      <!-- Derecha: Logs en tiempo real -->
+      <div class="card">
+        <div class="section-title">
+          <span>⚡ Consola de Eventos & Telemetría</span>
+        </div>
+        <div class="logs-console" id="logs-container">
+          <div class="log-line">
+            <span class="log-time">[00:00:00]</span>
+            <span class="log-msg">Iniciando monitor local...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function fetchState() {
+      try {
+        const res = await fetch('/api/state');
+        const data = await res.json();
+
+        // Update basic info
+        document.getElementById('node-id-display').textContent = data.nodeId + ' (' + data.system.platform + ')';
+        document.getElementById('donation-toggle').checked = data.isDonating;
+
+        // Rewards info
+        if (data.rewards) {
+          document.getElementById('val-foxy-balance').textContent = (data.rewards.balance || 0).toFixed(4);
+          document.getElementById('val-foxy-lifetime').textContent = (data.rewards.lifetimeEarnings || 0).toFixed(4) + ' $FOXY';
+          document.getElementById('val-foxy-epochs').textContent = data.rewards.epochsSettled || 0;
+          document.getElementById('tier-display').textContent = (data.rewards.tier || 'STANDARD') + ' TIER';
+        }
+
+        // Engine info
+        if (data.runtime) {
+          document.getElementById('engine-name-display').textContent = data.runtime.name;
+          const badge = document.getElementById('engine-badge-display');
+          if (data.runtime.isOciReady) {
+            badge.textContent = 'OCI READY 🐳';
+            badge.style.color = '#38bdf8';
+          } else {
+            badge.textContent = 'SANDBOX NATIVO ⚡';
+            badge.style.color = '#10b981';
+          }
+        }
+
+        // Status pill
+        const statusPill = document.getElementById('status-pill');
+        const statusText = document.getElementById('status-text');
+        if (!data.isDonating) {
+          statusPill.style.background = 'rgba(239, 68, 68, 0.15)';
+          statusPill.style.color = '#ef4444';
+          statusText.textContent = 'Donación Pausada';
+        } else if (data.tunnelStatus === 'CONNECTED') {
+          statusPill.style.background = 'rgba(16, 185, 129, 0.15)';
+          statusPill.style.color = '#10b981';
+          statusText.textContent = 'Túnel Conectado (Online)';
+        } else {
+          statusPill.style.background = 'rgba(245, 158, 11, 0.15)';
+          statusPill.style.color = '#f59e0b';
+          statusText.textContent = 'Reconectando...';
+        }
+
+        // Metrics
+        document.getElementById('val-requests').textContent = data.stats.requestsHandled;
+        document.getElementById('val-bandwidth').textContent = (data.stats.bytesServed / 1024).toFixed(1) + ' KB';
+        document.getElementById('val-cpu').textContent = data.system.cpuCores + ' Cores';
+        document.getElementById('val-cpu-desc').textContent = data.system.cpuModel;
+        document.getElementById('val-ram').textContent = (data.system.freeRamMb / 1024).toFixed(1) + ' GB';
+        document.getElementById('val-ram-desc').textContent = 'Total: ' + (data.system.totalRamMb / 1024).toFixed(1) + ' GB (Cuota: ' + data.quota.maxRamMb + ' MB)';
+
+        // Workloads table
+        const workloads = data.workloads || [];
+        document.getElementById('workload-count').textContent = workloads.length + ' activas';
+        const tbody = document.getElementById('workloads-tbody');
+        if (workloads.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted)">No hay cargas activas.</td></tr>';
+        } else {
+          tbody.innerHTML = workloads.map(w => {
+            const directUrl = 'http://localhost:8080/t/' + w.subdomain + '/';
+            return `
+              <tr>
+                <td><strong>${w.name}</strong></td>
+                <td><span class="type-pill type-${w.type}">${w.type}</span></td>
+                <td><code>${w.subdomain}</code></td>
+                <td><code>:${w.port}</code></td>
+                <td><span style="color:#10b981; font-weight:600">● ${w.status}</span></td>
+                <td>
+                  <a class="btn-action btn-open" href="${directUrl}" target="_blank">Abrir ↗</a>
+                  <button class="btn-action btn-stop" onclick="stopWorkload('${w.id}')">Detener</button>
+                </td>
+              </tr>
+            `;
+          }).join('');
+        }
+
+        // Logs
+        const logsContainer = document.getElementById('logs-container');
+        if (data.logs && data.logs.length > 0) {
+          logsContainer.innerHTML = data.logs.map(log => {
+            const type = log.type || 'info';
+            return '<div class="log-line log-' + type + '">' +
+              '<span class="log-time">[' + log.timestamp + ']</span>' +
+              '<span class="log-msg">' + log.message + '</span>' +
+            '</div>';
+          }).join('');
+        }
+      } catch (err) {
+        console.error('Error fetching state:', err);
+      }
+    }
+
+    async function toggleDonation() {
+      await fetch('/api/toggle-donation', { method: 'POST' });
+      fetchState();
+    }
+
+    async function claimRewards() {
+      try {
+        const res = await fetch('/api/claim-rewards', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          alert('🎉 ¡Retiro exitoso!\n\nCantidad: ' + data.amount + ' $FOXY\nTxHash: ' + data.receipt.txHash + '\nDestino: ' + data.receipt.to);
+          fetchState();
+        } else {
+          alert('No hay saldo acumulado para reclamar todavía. Espera que finalice la próxima época de liquidación.');
+        }
+      } catch (err) {
+        alert('Error al reclamar recompensas: ' + err.message);
+      }
+    }
+
+    async function handleSpawnWorkload(e) {
+      e.preventDefault();
+      const type = document.getElementById('spawn-type').value;
+      const name = document.getElementById('spawn-name').value.trim();
+      const subdomain = document.getElementById('spawn-subdomain').value.trim();
+
+      if (!name || !subdomain) return;
+
+      try {
+        const res = await fetch('/api/workloads/spawn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, name, subdomain })
+        });
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('spawn-name').value = '';
+          document.getElementById('spawn-subdomain').value = '';
+          fetchState();
+        } else {
+          alert('Error al desplegar carga: ' + (data.error || 'Desconocido'));
+        }
+      } catch (err) {
+        alert('Fallo de conexión: ' + err.message);
+      }
+    }
+
+    async function stopWorkload(id) {
+      if (!confirm('¿Deseas detener esta carga de trabajo?')) return;
+      await fetch('/api/workloads/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      fetchState();
+    }
+
+    setInterval(fetchState, 1500);
+    fetchState();
+  </script>
+</body>
+</html>

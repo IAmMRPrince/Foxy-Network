@@ -1,0 +1,7 @@
+{
+  "name": "foxy-security",
+  "version": "0.1.0",
+  "description": "Foxy Network Cryptographic Identity, JWT Tokens, and Tunnel Security",
+  "type": "module",
+  "main": "src/index.js"
+}
