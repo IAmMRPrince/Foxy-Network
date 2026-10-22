@@ -26,6 +26,12 @@ const services = [
     color: '\x1b[33m', // Yellow
     cmd: 'node',
     args: ['packages/foxy-daemon/src/index.js']
+  },
+  {
+    name: 'FoxyFinance',
+    color: '\x1b[32m', // Green
+    cmd: 'node',
+    args: ['packages/foxy-finance-workload/src/index.js']
   }
 ];
 

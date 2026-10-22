@@ -74,8 +74,19 @@ El cliente donante genera automáticamente una billetera EVM (`0x...`) segura y 
 * Exportar su clave privada o frase semilla de 12 palabras.
 * Reclamar sus recompensas con firma criptográfica ECDSA lista para interactuar con la blockchain.
 
-### Mecanismo Deflacionario (Burn)
-Los usuarios que desean alojar aplicaciones o consumir ancho de banda de la red dVPN pagan tarifas en `$FOXY`. Un porcentaje de cada tarifa se **quema permanentemente (Burn)**, reduciendo la oferta circulante y respaldando el valor de la red.
+### 💎 Respaldo por Servicios Premium & Monetización del Creador
+El token `$FOXY` no es inflacionario sin sustento: su valor está respaldado por el flujo de ingresos de **Servicios Premium** y la **Demanda Institucional de Foxy Finance**:
+
+* **Servicios Premium Facturables:**
+  - **Foxy Pro Tunnel ($19/mes):** Túneles dedicados, failover ultrarrápido (<1s) y certificados SSL automáticos.
+  - **Enterprise dVPN Business ($49/mes):** IPs residenciales estáticas dedicadas y pools de ancho de banda garantizado.
+* **Modelo de Reparto de Ingresos (Smart Contract `FoxyTreasuryVault.sol`):**
+  - 👑 **40% Margen del Fundador:** Ingreso neto directo a la billetera del creador del proyecto.
+  - 🏦 **45% Fondo de Respaldo de Liquidez:** Bóveda de tesorería que garantiza el valor piso en USD de `$FOXY` y paga a los donantes según el valor real de mercado de sus recursos.
+  - 🔥 **15% Buyback & Burn:** Recompra automática y quema de tokens en DEX, generando escasez y valor deflacionario.
+
+### 📈 Respaldo Institucional por Cómputo de Foxy Finance
+El ecosistema **Foxy Finance** cubre una parte significativa de su capacidad de cómputo en la nube (cálculo de riesgo DeFi Monte Carlo, escaneo de arbitraje multi-DEX y liquidación de libros contables) ejecutándose directamente sobre los nodos de Foxy Network. Cada trabajo computacional inyecta liquidez en el fondo de respaldo del token, garantizando demanda orgánica y volumen continuo.
 
 ---
 

@@ -2,13 +2,15 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { issueSubdomainToken } from '../../foxy-security/src/index.js';
 import { FoxyLedger, TOKENOMICS_CONFIG } from './ledger.js';
+import { PremiumEngine } from './premium-tiers.js';
 
 const CONTROLLER_PORT = parseInt(process.env.FOXY_CONTROLLER_PORT || '4000', 10);
 
-// In-memory registry & Tokenomics Ledger
+// In-memory registry, Tokenomics Ledger & Premium Treasury Engine
 const nodes = new Map();
 const deployments = new Map();
 const ledger = new FoxyLedger();
+const premiumEngine = new PremiumEngine();
 
 // Periodic node health pruner (marks nodes offline if no heartbeat in 20s)
 setInterval(() => {
@@ -163,6 +165,14 @@ const server = http.createServer((req, res) => {
       // Check if there are pending deployments for this node
       const pendingForThis = Array.from(deployments.values()).filter(d => d.assignedNodeId === nodeId && d.status !== 'RUNNING');
 
+      // Calculate fair market value of donated resources in USD
+      const usdValue = premiumEngine.calculateResourceUsdValue({
+        uptimeSeconds: (account.epochsSettled * 30) + (account.pendingUptimeSeconds || 30),
+        bytesServed: (node.telemetry?.bytesServed || 0),
+        vpnBytesServed: (node.telemetry?.vpnBytesServed || 0),
+        specs: node.specs
+      });
+
       sendJson(200, {
         status: 'ACK',
         epoch: ledger.currentEpoch,
@@ -171,6 +181,9 @@ const server = http.createServer((req, res) => {
           lifetimeEarnings: account.lifetimeEarnings,
           tier: account.tier,
           epochsSettled: account.epochsSettled,
+          resourceValuationUsd: usdValue.totalUsd,
+          tokenFloorPriceUsd: premiumEngine.treasury.foxyTokenFloorPriceUsd,
+          treasuryBackingPoolUsd: premiumEngine.treasury.donorBackingPoolUsd,
           recentPayouts: account.recentPayouts.slice(0, 3)
         },
         pendingCommands: pendingForThis.map(d => ({
@@ -302,7 +315,72 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 7. Controller Dashboard
+  // 7. Premium Services & Treasury Overview
+  if (req.method === 'GET' && pathname === '/api/premium/overview') {
+    sendJson(200, premiumEngine.getTreasuryOverview());
+    return;
+  }
+
+  // 8. Purchase Premium Service (Subdomain, dVPN Enterprise, Pro Tunnel)
+  if (req.method === 'POST' && pathname === '/api/premium/subscribe') {
+    readJson((err, data) => {
+      if (err || !data.planId) return sendJson(400, { error: 'planId is required' });
+      try {
+        const subRecord = premiumEngine.subscribePlan(
+          data.planId,
+          data.subscriberAddress || '0xAnonymousDonorSubscriber',
+          data.paymentMethod || 'USD'
+        );
+        console.log(`[Premium 💎] New Subscription: ${subRecord.planName} by ${subRecord.subscriber} (Revenue: $${subRecord.amountPaid} USD)`);
+        sendJson(201, { success: true, subscription: subRecord, treasury: premiumEngine.treasury });
+      } catch (e) {
+        sendJson(400, { error: e.message });
+      }
+    });
+    return;
+  }
+
+  // 9. Foxy Finance Institutional Workload Dispatch
+  if (req.method === 'POST' && pathname === '/api/foxy-finance/dispatch') {
+    readJson((err, data) => {
+      if (err) return sendJson(400, { error: 'Invalid JSON' });
+      const record = premiumEngine.recordFoxyFinanceCompute({
+        workloadName: data.workloadName,
+        computeUnits: data.computeUnits || 2,
+        billingUsd: data.billingUsd || 0.40,
+        timestamp: new Date().toISOString()
+      });
+
+      // Distribute activity to online nodes
+      const onlineNodes = Array.from(nodes.values()).filter(n => n.status === 'ONLINE');
+      if (onlineNodes.length > 0) {
+        const targetNode = onlineNodes[Math.floor(Math.random() * onlineNodes.length)];
+        ledger.recordActivity(targetNode.id, {
+          uptimeDeltaSeconds: 15,
+          bytesDelta: (data.computeUnits || 2) * 256 * 1024,
+          specs: targetNode.specs,
+          walletAddress: targetNode.walletAddress
+        });
+      }
+
+      console.log(`[Foxy Finance 📈] Cómputo institucional procesado: ${record.workloadName} ($${record.revenueUsd} USD)`);
+      sendJson(200, { success: true, record, treasury: premiumEngine.treasury });
+    });
+    return;
+  }
+
+  // 10. Foxy Finance Telemetry & Compute Demand Metrics
+  if (req.method === 'GET' && pathname === '/api/foxy-finance/telemetry') {
+    sendJson(200, {
+      ecosystem: 'Foxy Finance DeFi Ecosystem',
+      recentWorkloads: premiumEngine.foxyFinanceWorkloads,
+      totalJobsProcessed: premiumEngine.foxyFinanceWorkloads.length,
+      treasuryBacking: premiumEngine.treasury
+    });
+    return;
+  }
+
+  // 11. Controller Dashboard
   if (req.method === 'GET' && pathname === '/') {
     serveControllerDashboard(req, res);
     return;

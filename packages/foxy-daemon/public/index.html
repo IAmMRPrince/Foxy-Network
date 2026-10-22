@@ -335,10 +335,16 @@
         <div class="token-balance-box">
           <span class="token-balance" id="val-foxy-balance">0.0000</span>
           <span class="token-symbol">$FOXY</span>
+          <span style="font-size:1.1rem; color:#10b981; font-weight:700; margin-left:12px;" id="val-usd-estimate">≈ $0.00 USD</span>
         </div>
         <div style="font-size:0.85rem; color:var(--text-muted)">
           Ganancias Totales: <strong style="color:var(--text)" id="val-foxy-lifetime">0.0000 $FOXY</strong> | 
           Épocas Liquidadas: <span id="val-foxy-epochs">0</span>
+        </div>
+        <div style="font-size:0.8rem; color:#8ba0c8; margin-top:6px; display:flex; gap:14px; flex-wrap:wrap;">
+          <span>Valor de Recursos Aportados: <strong style="color:#10b981" id="val-resource-usd">$0.00 USD</strong></span>
+          <span>Precio Piso Respaldo: <strong style="color:var(--gold)" id="val-floor-price">$0.12 USD</strong></span>
+          <span>Respaldo Tesorería & Foxy Finance: <strong style="color:var(--cyan)" id="val-treasury-backing">$562.50 USD</strong></span>
         </div>
       </div>
       <div>
@@ -539,10 +545,24 @@
 
         // Rewards info
         if (data.rewards) {
-          document.getElementById('val-foxy-balance').textContent = (data.rewards.balance || 0).toFixed(4);
+          const balance = data.rewards.balance || 0;
+          const floorPrice = data.rewards.tokenFloorPriceUsd || 0.12;
+          const usdVal = (balance * floorPrice).toFixed(2);
+          document.getElementById('val-foxy-balance').textContent = balance.toFixed(4);
+          document.getElementById('val-usd-estimate').textContent = '≈ $' + usdVal + ' USD';
           document.getElementById('val-foxy-lifetime').textContent = (data.rewards.lifetimeEarnings || 0).toFixed(4) + ' $FOXY';
           document.getElementById('val-foxy-epochs').textContent = data.rewards.epochsSettled || 0;
           document.getElementById('tier-display').textContent = (data.rewards.tier || 'STANDARD') + ' TIER';
+
+          if (data.rewards.resourceValuationUsd !== undefined) {
+            document.getElementById('val-resource-usd').textContent = '$' + (data.rewards.resourceValuationUsd || 0).toFixed(2) + ' USD';
+          }
+          if (data.rewards.tokenFloorPriceUsd !== undefined) {
+            document.getElementById('val-floor-price').textContent = '$' + data.rewards.tokenFloorPriceUsd.toFixed(3) + ' USD';
+          }
+          if (data.rewards.treasuryBackingPoolUsd !== undefined) {
+            document.getElementById('val-treasury-backing').textContent = '$' + data.rewards.treasuryBackingPoolUsd.toFixed(2) + ' USD';
+          }
         }
 
         // Engine info
