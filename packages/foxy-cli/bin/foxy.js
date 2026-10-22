@@ -27,6 +27,12 @@ async function main() {
     case 'claim':
       await claimRewards(args[1], args[2]);
       break;
+    case 'vpn':
+      await handleVpnCommand(args.slice(1));
+      break;
+    case 'token':
+      await showTokenInfo();
+      break;
     case 'help':
     default:
       showHelp();
@@ -214,6 +220,65 @@ async function claimRewards(nodeId, walletAddress) {
   }
 }
 
+async function handleVpnCommand(subArgs) {
+  const subCmd = subArgs[0] || 'status';
+
+  if (subCmd === 'connect' || subCmd === 'start') {
+    const port = parseInt(subArgs[1] || '1080', 10);
+    console.log(`\n🛡️ Iniciando cliente dVPN en 127.0.0.1:${port}...`);
+    try {
+      const { FoxyVpnClient } = await import('../../foxy-vpn/src/client.js');
+      const vpnClient = new FoxyVpnClient({ port });
+      await vpnClient.start();
+    } catch (e) {
+      console.error(`Error iniciando dVPN: ${e.message}`);
+    }
+    return;
+  }
+
+  // VPN Status
+  try {
+    const res = await fetch(`${GATEWAY_URL}/api/vpn/status`);
+    const data = await res.json();
+    console.log(`\n🛡️ === ESTADO DE LA RED DESCENTRALIZADA dVPN ===\n`);
+    console.log(`Repetidores Exit Activos:   ${data.activeRelaysCount}`);
+    console.log(`Sesiones Cifradas Activas:  ${data.activeSessionsCount}`);
+    if (data.relays?.length > 0) {
+      console.log(`Nodos repetidores disponibles:`);
+      data.relays.forEach(r => console.log(`  - 🌐 [${r}] (Cifrado AES-256-GCM / Zero-Logs)`));
+    } else {
+      console.log(`Aún no hay nodos repetidores registrados.`);
+    }
+    console.log(`\nPara conectarte a través de la dVPN:`);
+    console.log(`  foxy vpn connect [puerto-local]\n`);
+  } catch (e) {
+    console.error(`Error consultando estado dVPN: ${e.message}`);
+  }
+}
+
+async function showTokenInfo() {
+  console.log(`
+🦊 ========================================================
+               FOXY NETWORK TOKENOMICS ($FOXY)
+========================================================
+  Token:              Foxy Network Token ($FOXY)
+  Estándar:           ERC-20 + Proof-of-Contribution + Burn
+  Cap Máximo:         1,000,000,000 $FOXY
+  Decimales:          18
+  Redes Compatibles:  Ethereum, Base, Polygon, Arbitrum, BSC
+
+  Mecanismo de Recompensas:
+    - Tiempo de Uptime:   0.25 $FOXY / minuto
+    - Ancho de Banda Web: 1.50 $FOXY / MB servido
+    - Tráfico dVPN:       2.00 $FOXY / MB cifrado enrutado
+    - Épocas de Pago:     Cada 30 segundos
+
+  Contrato Inteligente:
+    packages/foxy-contracts/contracts/FoxyToken.sol
+========================================================
+`);
+}
+
 function showHelp() {
   console.log(`
 🦊 Foxy Network CLI — Herramienta de Gestión DePIN
@@ -227,7 +292,9 @@ Comandos disponibles:
   deploy <subdominio>   Despliega un servicio o aplicación en un nodo donante
   leaderboard           Muestra la tabla de clasificación y total acuñado en la red
   balance [nodeId]      Consulta el saldo de tokens $FOXY y recibos de un nodo
-  claim [nodeId] [addr] Reclama y transfiere las recompensas acumuladas
+  claim [nodeId] [addr] Reclama y transfiere las recompensas acumuladas (firmadas Web3)
+  vpn [status|connect]  Consulta o inicia el túnel cliente dVPN cifrado (127.0.0.1:1080)
+  token                 Muestra detalles del token $FOXY, economía y smart contracts
   help                  Muestra este menú de ayuda
 `);
 }

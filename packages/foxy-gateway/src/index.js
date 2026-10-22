@@ -11,8 +11,13 @@ const activeTunnels = new Map();
 // Pending HTTP requests: requestId -> { req, res, timer }
 const pendingRequests = new Map();
 
+// Active dVPN relays: nodeId -> { ws, nodeId, connectedAt, sessions: 0, bytesRouted: 0 }
+const activeVpnRelays = new Map();
+// Active dVPN sessions: sessionId -> { clientWs, relayWs, nodeId }
+const vpnSessions = new Map();
+
 // -------------------------------------------------------------
-// 1. WebSocket Tunnel Server (Accepts connections from Daemons)
+// 1. WebSocket Tunnel Server (Accepts connections from Daemons & dVPN Clients)
 // -------------------------------------------------------------
 const wss = new WebSocketServer({ port: TUNNEL_PORT });
 
@@ -20,12 +25,90 @@ wss.on('connection', (ws, req) => {
   let boundSubdomain = null;
   let boundNodeId = null;
 
-  console.log(`[Gateway Tunnel] New incoming daemon connection from ${req.socket.remoteAddress}`);
+  console.log(`[Gateway Tunnel] New incoming connection from ${req.socket.remoteAddress}`);
 
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
 
+      // --- dVPN PROTOCOL HANDLING ---
+      if (msg.type === 'REGISTER_VPN_RELAY') {
+        const { nodeId } = msg;
+        boundNodeId = nodeId || boundNodeId || `node-${randomUUID().slice(0, 8)}`;
+        activeVpnRelays.set(boundNodeId, {
+          ws,
+          nodeId: boundNodeId,
+          connectedAt: new Date().toISOString(),
+          sessions: 0,
+          bytesRouted: 0
+        });
+        console.log(`[Gateway dVPN 🛡️] 🌐 Nodo donante [${boundNodeId}] registrado como repetidor Exit dVPN`);
+        ws.send(JSON.stringify({ type: 'VPN_RELAY_ACK', nodeId: boundNodeId }));
+        return;
+      }
+
+      if (msg.type === 'VPN_CLIENT_REGISTER') {
+        console.log(`[Gateway dVPN 🛡️] 🔒 Cliente dVPN [${msg.clientId}] conectado.`);
+        return;
+      }
+
+      if (msg.type === 'VPN_REQUEST_CONNECT') {
+        const { sessionId, targetHost, targetPort } = msg;
+        const availableRelays = Array.from(activeVpnRelays.values()).filter(r => r.ws.readyState === 1);
+        if (availableRelays.length === 0) {
+          ws.send(JSON.stringify({
+            type: 'VPN_ERROR',
+            sessionId,
+            error: 'No hay repetidores dVPN disponibles en la red Foxy'
+          }));
+          return;
+        }
+
+        const selectedRelay = availableRelays[Math.floor(Math.random() * availableRelays.length)];
+        selectedRelay.sessions++;
+        vpnSessions.set(sessionId, { clientWs: ws, relayWs: selectedRelay.ws, nodeId: selectedRelay.nodeId });
+        selectedRelay.ws.send(JSON.stringify(msg));
+        return;
+      }
+
+      if (msg.type === 'VPN_CONNECTED') {
+        const session = vpnSessions.get(msg.sessionId);
+        if (session && session.clientWs.readyState === 1) {
+          session.clientWs.send(JSON.stringify(msg));
+        }
+        return;
+      }
+
+      if (msg.type === 'VPN_CLIENT_DATA') {
+        const session = vpnSessions.get(msg.sessionId);
+        if (session && session.relayWs.readyState === 1) {
+          session.relayWs.send(JSON.stringify(msg));
+        }
+        return;
+      }
+
+      if (msg.type === 'VPN_DATA_STREAM') {
+        const session = vpnSessions.get(msg.sessionId);
+        if (session && session.clientWs.readyState === 1) {
+          session.clientWs.send(JSON.stringify(msg));
+        }
+        return;
+      }
+
+      if (msg.type === 'VPN_CLIENT_CLOSE' || msg.type === 'VPN_CLOSED' || msg.type === 'VPN_ERROR') {
+        const session = vpnSessions.get(msg.sessionId);
+        if (session) {
+          if (msg.type === 'VPN_CLIENT_CLOSE' && session.relayWs.readyState === 1) {
+            session.relayWs.send(JSON.stringify(msg));
+          } else if ((msg.type === 'VPN_CLOSED' || msg.type === 'VPN_ERROR') && session.clientWs.readyState === 1) {
+            session.clientWs.send(JSON.stringify(msg));
+          }
+          vpnSessions.delete(msg.sessionId);
+        }
+        return;
+      }
+
+      // --- STANDARD HTTP REVERSE TUNNEL HANDLING ---
       if (msg.type === 'REGISTER_TUNNEL') {
         const { subdomain, nodeId, specs, authToken } = msg;
         if (!subdomain) {
@@ -75,21 +158,18 @@ wss.on('connection', (ws, req) => {
         const pending = pendingRequests.get(requestId);
 
         if (!pending) {
-          // Request might have timed out
           return;
         }
 
         clearTimeout(pending.timer);
         pendingRequests.delete(requestId);
 
-        // Track stats
         const tunnel = activeTunnels.get(boundSubdomain);
         if (tunnel) {
           tunnel.requestCount++;
         }
 
         const safeHeaders = headers || {};
-        // Ensure no chunked conflict if body is sent at once
         delete safeHeaders['transfer-encoding'];
 
         pending.res.writeHead(statusCode || 200, safeHeaders);
@@ -115,6 +195,15 @@ wss.on('connection', (ws, req) => {
     if (boundSubdomain && activeTunnels.get(boundSubdomain)?.ws === ws) {
       activeTunnels.delete(boundSubdomain);
       console.log(`[Gateway Tunnel] 🔌 Tunnel closed for [${boundSubdomain}] (Node: ${boundNodeId})`);
+    }
+    if (boundNodeId && activeVpnRelays.has(boundNodeId) && activeVpnRelays.get(boundNodeId).ws === ws) {
+      activeVpnRelays.delete(boundNodeId);
+      console.log(`[Gateway dVPN 🛡️] 🔌 dVPN Relay desconectado: ${boundNodeId}`);
+    }
+    for (const [sId, sess] of vpnSessions.entries()) {
+      if (sess.clientWs === ws || sess.relayWs === ws) {
+        vpnSessions.delete(sId);
+      }
     }
   });
 
@@ -188,6 +277,18 @@ const httpServer = http.createServer((req, res) => {
       status: 'online',
       activeTunnelsCount: activeTunnels.size,
       tunnels: tunnelsList
+    }, null, 2));
+    return;
+  }
+
+  // dVPN Status API
+  if (req.url === '/api/vpn/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'online',
+      activeRelaysCount: activeVpnRelays.size,
+      activeSessionsCount: vpnSessions.size,
+      relays: Array.from(activeVpnRelays.keys())
     }, null, 2));
     return;
   }

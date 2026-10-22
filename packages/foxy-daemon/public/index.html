@@ -346,6 +346,54 @@
       </div>
     </div>
 
+    <!-- Web3 EVM Wallet & dVPN Feature Cards -->
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1.25rem; margin-bottom:1.5rem;">
+      <!-- Web3 Wallet Card -->
+      <div class="card" style="border-left: 3px solid var(--gold); padding: 1.25rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+          <div style="font-size:0.9rem; font-weight:700; color:var(--gold); display:flex; align-items:center; gap:6px;">
+            <span>🦊 Billetera Web3 ($FOXY EVM)</span>
+          </div>
+          <span style="font-size:0.75rem; background:rgba(245,158,11,0.15); color:var(--gold); padding:2px 8px; border-radius:6px; font-weight:700;">Base / Polygon / EVM</span>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:0.8rem; background:#070b14; padding:8px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.06); word-break:break-all; color:#e2e8f0; margin-bottom:0.75rem;" id="wallet-address-display">
+          0x...
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn-action btn-open" onclick="copyWalletAddress()" style="padding:5px 10px; font-size:0.75rem;">📋 Copiar Dirección</button>
+          <button class="btn-action" onclick="changeCustomWallet()" style="background:rgba(139,92,246,0.15); color:var(--purple); border:1px solid rgba(139,92,246,0.3); padding:5px 10px; font-size:0.75rem;">🦊 Conectar MetaMask</button>
+          <button class="btn-action" onclick="exportWalletKeys()" style="background:rgba(255,255,255,0.08); color:var(--text); border:1px solid rgba(255,255,255,0.15); padding:5px 10px; font-size:0.75rem;">🔑 Exportar Llave</button>
+        </div>
+      </div>
+
+      <!-- dVPN Exit Relay Card -->
+      <div class="card" style="border-left: 3px solid var(--cyan); padding: 1.25rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+          <div style="font-size:0.9rem; font-weight:700; color:var(--cyan); display:flex; align-items:center; gap:6px;">
+            <span>🛡️ Red dVPN Cifrada (AES-256-GCM)</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span id="vpn-status-badge" style="font-size:0.75rem; background:rgba(0,242,254,0.15); color:var(--cyan); padding:2px 8px; border-radius:6px; font-weight:700;">ACTIVO</span>
+            <label class="toggle-switch" style="width:40px; height:22px;">
+              <input type="checkbox" id="vpn-toggle" checked onchange="toggleVpnRelay()">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.6rem;">
+          <span>Tráfico dVPN Enrutado:</span>
+          <strong style="color:var(--text)" id="val-vpn-traffic">0.0 MB</strong>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
+          <span>Recompensa Extra:</span>
+          <strong style="color:var(--gold)">+2.00 $FOXY / MB</strong>
+        </div>
+        <div style="background:#070b14; border:1px solid rgba(0,242,254,0.15); border-radius:8px; padding:6px 10px; font-size:0.75rem; color:#8ba0c8;">
+          💡 <strong>Navega con privacidad:</strong> Configura tu navegador o cliente en <code>127.0.0.1:1080</code> o ejecuta <code>foxy vpn connect</code>.
+        </div>
+      </div>
+    </div>
+
     <div class="engine-banner">
       <div class="engine-title">
         <span>⚙️ Motor de Ejecución:</span>
@@ -450,6 +498,8 @@
   </div>
 
   <script>
+    let currentWalletAddress = '';
+
     async function fetchState() {
       try {
         const res = await fetch('/api/state');
@@ -458,6 +508,34 @@
         // Update basic info
         document.getElementById('node-id-display').textContent = data.nodeId + ' (' + data.system.platform + ')';
         document.getElementById('donation-toggle').checked = data.isDonating;
+
+        // Wallet info
+        if (data.wallet) {
+          currentWalletAddress = data.wallet.activePayoutAddress || data.wallet.generatedAddress;
+          const displayEl = document.getElementById('wallet-address-display');
+          if (data.wallet.customPayoutAddress) {
+            displayEl.innerHTML = '<span style="color:var(--purple)">[MetaMask]</span> ' + currentWalletAddress;
+          } else {
+            displayEl.textContent = currentWalletAddress;
+          }
+        }
+
+        // dVPN info
+        if (data.vpn) {
+          document.getElementById('vpn-toggle').checked = data.vpn.enabled;
+          const badge = document.getElementById('vpn-status-badge');
+          if (data.vpn.enabled) {
+            badge.textContent = 'ACTIVO (Relay)';
+            badge.style.background = 'rgba(0,242,254,0.15)';
+            badge.style.color = 'var(--cyan)';
+          } else {
+            badge.textContent = 'PAUSADO';
+            badge.style.background = 'rgba(239,68,68,0.15)';
+            badge.style.color = '#ef4444';
+          }
+          const mbRouted = (data.vpn.totalBytesRouted / (1024 * 1024)).toFixed(2);
+          document.getElementById('val-vpn-traffic').textContent = mbRouted + ' MB (' + (data.vpn.activeSessions || 0) + ' activas)';
+        }
 
         // Rewards info
         if (data.rewards) {
@@ -601,6 +679,59 @@
         body: JSON.stringify({ id })
       });
       fetchState();
+    }
+
+    function copyWalletAddress() {
+      if (!currentWalletAddress) return;
+      navigator.clipboard.writeText(currentWalletAddress).then(() => {
+        alert('📋 Dirección copiada al portapapeles:\n' + currentWalletAddress);
+      });
+    }
+
+    async function changeCustomWallet() {
+      const current = currentWalletAddress;
+      const addr = prompt('Ingresa tu dirección pública de MetaMask o billetera EVM (0x...):\n(Deja en blanco para volver a la auto-generada)', current);
+      if (addr === null) return;
+      try {
+        const res = await fetch('/api/wallet/custom-address', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: addr.trim() || null })
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✅ Dirección de cobro de recompensas actualizada:\n' + data.activeAddress);
+          fetchState();
+        } else {
+          alert('Error: ' + data.error);
+        }
+      } catch (err) {
+        alert('Error conectando: ' + err.message);
+      }
+    }
+
+    async function exportWalletKeys() {
+      try {
+        const res = await fetch('/api/wallet/export');
+        const keys = await res.json();
+        alert('🔑 CREDENCIALES DE TU BILLETERA $FOXY:\n\n' +
+              'Dirección:\n' + keys.address + '\n\n' +
+              'Clave Privada (Para importar en MetaMask):\n' + keys.privateKey + '\n\n' +
+              (keys.mnemonic ? 'Frase Semilla (12 palabras):\n' + keys.mnemonic : '') +
+              '\n\n⚠️ ¡ADVERTENCIA! Nunca compartas tu clave privada con nadie.');
+      } catch (err) {
+        alert('Error al exportar credenciales: ' + err.message);
+      }
+    }
+
+    async function toggleVpnRelay() {
+      try {
+        const res = await fetch('/api/vpn/toggle', { method: 'POST' });
+        const data = await res.json();
+        fetchState();
+      } catch (err) {
+        console.error('Error toggling dVPN:', err);
+      }
     }
 
     setInterval(fetchState, 1500);

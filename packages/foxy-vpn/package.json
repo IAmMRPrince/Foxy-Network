@@ -1,0 +1,20 @@
+{
+  "name": "foxy-vpn",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Foxy Network - Encrypted Decentralized VPN (dVPN) Service with Zero-Knowledge Egress and Tokenomics",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/client.js"
+  },
+  "keywords": [
+    "depin",
+    "dvpn",
+    "decentralized-vpn",
+    "encrypted-tunnel",
+    "proxy",
+    "privacy"
+  ],
+  "author": "Foxy Network Contributors",
+  "license": "Apache-2.0"
+}

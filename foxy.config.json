@@ -1,6 +1,6 @@
 {
   "networkName": "Foxy Network DePIN Cluster",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "gateway": {
     "tunnelUrl": "ws://127.0.0.1:8081",
     "httpPort": 8080
@@ -15,6 +15,25 @@
       "maxCpuCores": 2,
       "maxRamMb": 2048,
       "maxStorageGb": 10
+    }
+  },
+  "vpn": {
+    "enabled": true,
+    "localProxyPort": 1080,
+    "allowedPorts": [80, 443, 8080, 8443, 53],
+    "blockedPorts": [25, 465, 587, 22, 445],
+    "encryption": "AES-256-GCM"
+  },
+  "token": {
+    "symbol": "$FOXY",
+    "name": "Foxy Network Token",
+    "decimals": 18,
+    "contractPath": "packages/foxy-contracts/contracts/FoxyToken.sol",
+    "settlementEpochMs": 30000,
+    "rates": {
+      "uptimePerMinute": 0.25,
+      "bandwidthPerMb": 1.50,
+      "vpnBandwidthPerMb": 2.00
     }
   },
   "security": {

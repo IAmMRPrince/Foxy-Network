@@ -9,6 +9,7 @@ lerna-debug.log*
 .env
 .env.local
 .env.*.local
+.foxy/
 
 # Operating System & IDE
 .DS_Store

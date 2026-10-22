@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { WorkloadEngine } from './workload-engine.js';
+import { WalletManager } from './wallet-manager.js';
+import { VpnRelay } from '../../foxy-vpn/src/relay.js';
 import { issueSubdomainToken } from '../../foxy-security/src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,9 +18,12 @@ const tokensMap = new Map();
 const DAEMON_PORT = parseInt(process.env.FOXY_DAEMON_PORT || '4040', 10);
 const GATEWAY_TUNNEL_URL = process.env.FOXY_GATEWAY_TUNNEL_URL || 'ws://127.0.0.1:8081';
 const CONTROLLER_URL = process.env.FOXY_CONTROLLER_URL || 'http://127.0.0.1:4000';
+const CLUSTER_SECRET = process.env.FOXY_CLUSTER_SECRET || 'foxy-depin-cluster-shared-secret-v1';
 
-// Initialize the Workload & Container Engine
+// Initialize the Workload Engine, Web3 Wallet Manager, and dVPN Exit Relay
 const engine = new WorkloadEngine();
+const walletManager = new WalletManager();
+const vpnRelay = new VpnRelay(CLUSTER_SECRET);
 
 // Configuration & Donor State
 const state = {
@@ -33,6 +38,12 @@ const state = {
   subdomain: 'foxy-demo-app',
   tunnelStatus: 'DISCONNECTED', // DISCONNECTED | CONNECTING | CONNECTED
   tunnelSocket: null,
+  wallet: walletManager.getPublicProfile(),
+  vpn: {
+    enabled: true,
+    totalBytesRouted: 0,
+    activeSessions: 0
+  },
   stats: {
     requestsHandled: 0,
     bytesServed: 0,
@@ -100,7 +111,7 @@ function connectToTunnelGateway() {
 
   ws.on('open', () => {
     state.tunnelStatus = 'CONNECTED';
-    addLog(`✅ Túnel WebSocket conectado. Registrando subdominios...`, 'success');
+    addLog(`✅ Túnel WebSocket conectado. Registrando subdominios y dVPN...`, 'success');
 
     // Register primary subdomain
     registerTunnelForSubdomain(state.subdomain);
@@ -110,6 +121,15 @@ function connectToTunnelGateway() {
       if (w.subdomain && w.subdomain !== state.subdomain && w.status === 'RUNNING') {
         registerTunnelForSubdomain(w.subdomain);
       }
+    }
+
+    // Register as dVPN Exit Relay if enabled
+    if (state.vpn.enabled) {
+      ws.send(JSON.stringify({
+        type: 'REGISTER_VPN_RELAY',
+        nodeId: state.nodeId
+      }));
+      addLog(`🛡️ Modo dVPN activo: Nodo disponible como túnel de salida cifrado.`, 'success');
     }
   });
 
@@ -123,6 +143,39 @@ function connectToTunnelGateway() {
 
       if (msg.type === 'SECURITY_ERROR') {
         addLog(`🛡️ Rechazado por Gateway de Seguridad: ${msg.message}`, 'error');
+      }
+
+      // dVPN Egress Traffic Handling
+      if (msg.type === 'VPN_REQUEST_CONNECT') {
+        if (!state.vpn.enabled) {
+          ws.send(JSON.stringify({
+            type: 'VPN_ERROR',
+            sessionId: msg.sessionId,
+            error: 'dVPN Exit Relay deshabilitado temporalmente en este nodo donante'
+          }));
+          return;
+        }
+
+        state.vpn.activeSessions++;
+        addLog(`🔒 dVPN: Enrutando conexión cifrada [${msg.sessionId.slice(0, 8)}...] hacia ${msg.targetHost}:${msg.targetPort}`);
+
+        vpnRelay.handleConnect(msg.sessionId, msg.targetHost, msg.targetPort, (frame) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(frame));
+          }
+        });
+        return;
+      }
+
+      if (msg.type === 'VPN_CLIENT_DATA') {
+        vpnRelay.handleData(msg.sessionId, msg.payload);
+        return;
+      }
+
+      if (msg.type === 'VPN_CLIENT_CLOSE') {
+        vpnRelay.closeSession(msg.sessionId);
+        state.vpn.activeSessions = vpnRelay.activeSessions.size;
+        return;
       }
 
       if (msg.type === 'HTTP_REQUEST') {
@@ -260,6 +313,7 @@ async function registerWithController() {
     const payload = JSON.stringify({
       nodeId: state.nodeId,
       name: state.name,
+      walletAddress: walletManager.getActiveAddress(),
       specs: {
         cores: os.cpus().length,
         totalRamMb: Math.round(os.totalmem() / 1024 / 1024),
@@ -295,13 +349,18 @@ async function sendHeartbeat() {
     const totalMem = os.totalmem();
     const memUsage = Math.round((totalMem - freeMem) / 1024 / 1024);
 
+    state.vpn.totalBytesRouted = vpnRelay.totalBytesRouted;
+    state.vpn.activeSessions = vpnRelay.activeSessions.size;
+
     const payload = JSON.stringify({
       nodeId: state.nodeId,
+      walletAddress: walletManager.getActiveAddress(),
       telemetry: {
         cpuUsagePercent: Math.floor(10 + Math.random() * 20),
         ramUsedMb: memUsage,
         requestsHandled: state.stats.requestsHandled,
-        bytesServed: state.stats.bytesServed
+        bytesServed: state.stats.bytesServed,
+        vpnBytesServed: vpnRelay.totalBytesRouted
       },
       activeWorkloads: engine.listWorkloads()
     });
@@ -391,6 +450,12 @@ const dashboardServer = http.createServer((req, res) => {
       quota: state.quota,
       stats: state.stats,
       rewards: state.rewards,
+      wallet: walletManager.getPublicProfile(),
+      vpn: {
+        enabled: state.vpn.enabled,
+        totalBytesRouted: vpnRelay.totalBytesRouted,
+        activeSessions: vpnRelay.activeSessions.size
+      },
       runtime: engine.runtime,
       workloads: engine.listWorkloads(),
       system: {
@@ -406,6 +471,55 @@ const dashboardServer = http.createServer((req, res) => {
     return;
   }
 
+  // Set Custom MetaMask / Web3 Address
+  if (req.method === 'POST' && url.pathname === '/api/wallet/custom-address') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { address } = JSON.parse(body);
+        const result = walletManager.setCustomPayoutAddress(address);
+        state.wallet = walletManager.getPublicProfile();
+        addLog(`🦊 Dirección de cobro de recompensas $FOXY actualizada: ${state.wallet.activePayoutAddress}`, 'success');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // Export Web3 Wallet Credentials (for MetaMask import)
+  if (req.method === 'GET' && url.pathname === '/api/wallet/export') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(walletManager.exportCredentials(), null, 2));
+    return;
+  }
+
+  // Toggle dVPN Exit Relay
+  if (req.method === 'POST' && url.pathname === '/api/vpn/toggle') {
+    state.vpn.enabled = !state.vpn.enabled;
+    addLog(`🛡️ Modo dVPN ${state.vpn.enabled ? 'HABILITADO' : 'DESHABILITADO'} por el usuario.`);
+    if (state.vpn.enabled && state.tunnelSocket && state.tunnelSocket.readyState === WebSocket.OPEN) {
+      state.tunnelSocket.send(JSON.stringify({
+        type: 'REGISTER_VPN_RELAY',
+        nodeId: state.nodeId
+      }));
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      success: true,
+      vpn: {
+        enabled: state.vpn.enabled,
+        totalBytesRouted: vpnRelay.totalBytesRouted,
+        activeSessions: vpnRelay.activeSessions.size
+      }
+    }));
+    return;
+  }
+
   // Claim Rewards API
   if (req.method === 'POST' && url.pathname === '/api/claim-rewards') {
     let body = '';
@@ -413,12 +527,13 @@ const dashboardServer = http.createServer((req, res) => {
     req.on('end', async () => {
       try {
         const payload = body ? JSON.parse(body) : {};
+        const targetWallet = payload.walletAddress || walletManager.getActiveAddress();
         const resClaim = await fetch(`${CONTROLLER_URL}/api/ledger/claim`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             nodeId: state.nodeId,
-            walletAddress: payload.walletAddress || null
+            walletAddress: targetWallet
           })
         });
 

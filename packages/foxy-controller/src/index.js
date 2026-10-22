@@ -139,19 +139,26 @@ const server = http.createServer((req, res) => {
       const prevBytes = node.telemetry?.bytesServed || 0;
       const deltaBytes = Math.max(0, currentBytes - prevBytes);
 
-      // Record verifiable proof of uptime & bandwidth into ledger
+      const currentVpnBytes = telemetry?.vpnBytesServed || 0;
+      const prevVpnBytes = node.telemetry?.vpnBytesServed || 0;
+      const deltaVpnBytes = Math.max(0, currentVpnBytes - prevVpnBytes);
+
+      // Record verifiable proof of uptime, cloud bandwidth, and dVPN egress traffic
       ledger.recordActivity(nodeId, {
         uptimeDeltaSeconds: deltaSecs,
         bytesDelta: deltaBytes,
-        specs: node.specs || {}
+        vpnBytesDelta: deltaVpnBytes,
+        specs: node.specs || {},
+        walletAddress: data.walletAddress || null
       });
 
       node.status = 'ONLINE';
       node.lastHeartbeat = now;
+      if (data.walletAddress) node.walletAddress = data.walletAddress;
       if (telemetry) node.telemetry = telemetry;
       if (activeWorkloads) node.activeWorkloads = activeWorkloads;
 
-      const account = ledger.getAccount(nodeId);
+      const account = ledger.getAccount(nodeId, data.walletAddress);
 
       // Check if there are pending deployments for this node
       const pendingForThis = Array.from(deployments.values()).filter(d => d.assignedNodeId === nodeId && d.status !== 'RUNNING');
@@ -259,14 +266,38 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'POST' && pathname === '/api/ledger/claim') {
-    readJson((err, data) => {
+    readJson(async (err, data) => {
       if (err || !data.nodeId) return sendJson(400, { error: 'nodeId is required' });
-      const result = ledger.claimRewards(data.nodeId, data.walletAddress);
-      if (!result.success) {
-        return sendJson(400, { error: result.error });
+      try {
+        const result = await ledger.claimRewards(data.nodeId, data.walletAddress);
+        if (!result.success) {
+          return sendJson(400, { error: result.error });
+        }
+        console.log(`[Tokenomics 💰] Claim Web3 signed for node ${data.nodeId}: ${result.amount} $FOXY sent to ${result.receipt.to} (Signature: ${result.receipt.signature.slice(0, 16)}...)`);
+        sendJson(200, result);
+      } catch (e) {
+        sendJson(500, { error: e.message });
       }
-      console.log(`[Tokenomics 💰] Claim processed for node ${data.nodeId}: ${result.amount} $FOXY sent to ${data.walletAddress || 'default'}`);
-      sendJson(200, result);
+    });
+    return;
+  }
+
+  // dVPN Online Nodes Discovery
+  if (req.method === 'GET' && pathname === '/api/vpn/nodes') {
+    const onlineNodes = Array.from(nodes.values())
+      .filter(n => n.status === 'ONLINE')
+      .map(n => ({
+        nodeId: n.id,
+        name: n.name,
+        walletAddress: n.walletAddress || null,
+        specs: n.specs,
+        status: n.status,
+        lastHeartbeat: n.lastHeartbeat
+      }));
+
+    sendJson(200, {
+      count: onlineNodes.length,
+      nodes: onlineNodes
     });
     return;
   }
