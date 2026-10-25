@@ -114,6 +114,24 @@ Foxy Network transforma los nodos donantes en repetidores de salida seguros para
 
 ---
 
+
+---
+
+## 🔗 Integración Estratégica con FOXY FINANCE (DePIN Hardware Contribution)
+
+Foxy Network actúa como el sustrato descentralizado de infraestructura para la plataforma de trading cuantitativo **[FOXY FINANCE](https://github.com/IAmMRPrince/foxy-finance)**. Los donantes de recursos de hardware pueden vincular sus equipos para obtener beneficios directos:
+
+### 🎁 Matriz de Beneficios en Foxy Finance:
+- **⚡ ESP32 / Microcontroladores IoT (15% Descuento)**: Telemetría de latencia de red global 24/7 y sondeo de nodos de exchanges (Binance, Alpaca, MetaTrader 5).
+- **📱 Celulares Android (Termux / Edge) (25% Descuento)**: Nodo centinela móvil de respaldo y verificación de redundancia de feeds.
+- **🍓 Raspberry Pi 3/4/5 / SBCs (50% Descuento o Plan Básico Bonificado)**: Auditoría continua de integridad de velas históricas y caché de libro de órdenes.
+- **💻 Computadores Personales / Laptops (70% Descuento)**: Ejecución de cuadrículas de cómputo sintético y simulaciones de estrés.
+- **🖥️ Servidores VPS / Bare Metal (100% GRATIS Pro Quant)**: Clúster institucional de alto rendimiento. Otorga membresía Pro Quant completa de por vida mientras el nodo esté activo.
+
+### 🛡️ Protección de Propiedad Intelectual & Seguridad Anti-IDOR:
+1. **Caja Negra Soberana**: Los nodos donantes de Foxy Network ejecutan únicamente pruebas sintéticas de latencia de red y benchmarks de cómputo (SHA256 / álgebra lineal sintética). El código fuente cuántico institucional (Fourier, DFA, OBI, redes neuronales) reside **estrictamente en el servidor central de Foxy Finance**.
+2. **Aislamiento Criptográfico Anti-IDOR**: La asignación de beneficios y descuentos está vinculada a los tokens de sesión únicos `TenantContext.get_user_id()`, impidiendo que un usuario interfiera o reclame recompensas de nodos ajenos.
+
 ## 🖥️ Enlaces Rápidos del Ecosistema
 
 - **Panel de Control del Donante:** [http://localhost:4040](http://localhost:4040)
