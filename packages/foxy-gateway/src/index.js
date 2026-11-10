@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import { randomUUID } from 'node:crypto';
-import { verifySubdomainToken } from '../../foxy-security/src/index.js';
+import { verifySubdomainToken, verifyNodeToken } from '../../foxy-security/src/index.js';
 
 const HTTP_PORT = parseInt(process.env.FOXY_GATEWAY_HTTP_PORT || '8080', 10);
 const TUNNEL_PORT = parseInt(process.env.FOXY_GATEWAY_TUNNEL_PORT || '8081', 10);
@@ -19,7 +19,8 @@ const vpnSessions = new Map();
 // -------------------------------------------------------------
 // 1. WebSocket Tunnel Server (Accepts connections from Daemons & dVPN Clients)
 // -------------------------------------------------------------
-const wss = new WebSocketServer({ port: TUNNEL_PORT });
+const TUNNEL_HOST = process.env.FOXY_GATEWAY_HOST || '0.0.0.0';
+const wss = new WebSocketServer({ port: TUNNEL_PORT, host: TUNNEL_HOST, maxPayload: 16 * 1024 * 1024 });
 
 wss.on('connection', (ws, req) => {
   let boundSubdomain = null;
@@ -33,8 +34,17 @@ wss.on('connection', (ws, req) => {
 
       // --- dVPN PROTOCOL HANDLING ---
       if (msg.type === 'REGISTER_VPN_RELAY') {
-        const { nodeId } = msg;
-        boundNodeId = nodeId || boundNodeId || `node-${randomUUID().slice(0, 8)}`;
+        // Only nodes holding an identity token issued by the controller may
+        // offer themselves as exit relays.
+        const relayAuth = verifyNodeToken(msg.nodeToken, msg.nodeId);
+        if (!relayAuth.valid) {
+          ws.send(JSON.stringify({
+            type: 'SECURITY_ERROR',
+            message: `Registro de repetidor dVPN denegado: ${relayAuth.error}`
+          }));
+          return;
+        }
+        boundNodeId = relayAuth.payload.sub;
         activeVpnRelays.set(boundNodeId, {
           ws,
           nodeId: boundNodeId,
@@ -53,7 +63,11 @@ wss.on('connection', (ws, req) => {
       }
 
       if (msg.type === 'VPN_REQUEST_CONNECT') {
-        const { sessionId, targetHost, targetPort } = msg;
+        const { sessionId, targetHost, targetPort, clientPublicKey } = msg;
+        if (typeof sessionId !== 'string' || !sessionId || vpnSessions.has(sessionId)) {
+          ws.send(JSON.stringify({ type: 'VPN_ERROR', sessionId, error: 'Sesión inválida o duplicada' }));
+          return;
+        }
         const availableRelays = Array.from(activeVpnRelays.values()).filter(r => r.ws.readyState === 1);
         if (availableRelays.length === 0) {
           ws.send(JSON.stringify({
@@ -67,13 +81,18 @@ wss.on('connection', (ws, req) => {
         const selectedRelay = availableRelays[Math.floor(Math.random() * availableRelays.length)];
         selectedRelay.sessions++;
         vpnSessions.set(sessionId, { clientWs: ws, relayWs: selectedRelay.ws, nodeId: selectedRelay.nodeId });
-        selectedRelay.ws.send(JSON.stringify(msg));
+        // Forward only the known fields: nothing else from the client reaches the relay.
+        selectedRelay.ws.send(JSON.stringify({
+          type: 'VPN_REQUEST_CONNECT', sessionId, targetHost, targetPort, clientPublicKey
+        }));
         return;
       }
 
+      // Each frame is accepted only from the peer that owns that side of the
+      // session, so one connection cannot inject data into another's session.
       if (msg.type === 'VPN_CONNECTED') {
         const session = vpnSessions.get(msg.sessionId);
-        if (session && session.clientWs.readyState === 1) {
+        if (session && session.relayWs === ws && session.clientWs.readyState === 1) {
           session.clientWs.send(JSON.stringify(msg));
         }
         return;
@@ -81,7 +100,7 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'VPN_CLIENT_DATA') {
         const session = vpnSessions.get(msg.sessionId);
-        if (session && session.relayWs.readyState === 1) {
+        if (session && session.clientWs === ws && session.relayWs.readyState === 1) {
           session.relayWs.send(JSON.stringify(msg));
         }
         return;
@@ -89,7 +108,7 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'VPN_DATA_STREAM') {
         const session = vpnSessions.get(msg.sessionId);
-        if (session && session.clientWs.readyState === 1) {
+        if (session && session.relayWs === ws && session.clientWs.readyState === 1) {
           session.clientWs.send(JSON.stringify(msg));
         }
         return;
@@ -98,12 +117,13 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'VPN_CLIENT_CLOSE' || msg.type === 'VPN_CLOSED' || msg.type === 'VPN_ERROR') {
         const session = vpnSessions.get(msg.sessionId);
         if (session) {
-          if (msg.type === 'VPN_CLIENT_CLOSE' && session.relayWs.readyState === 1) {
-            session.relayWs.send(JSON.stringify(msg));
-          } else if ((msg.type === 'VPN_CLOSED' || msg.type === 'VPN_ERROR') && session.clientWs.readyState === 1) {
-            session.clientWs.send(JSON.stringify(msg));
+          if (msg.type === 'VPN_CLIENT_CLOSE' && session.clientWs === ws) {
+            if (session.relayWs.readyState === 1) session.relayWs.send(JSON.stringify(msg));
+            vpnSessions.delete(msg.sessionId);
+          } else if (msg.type !== 'VPN_CLIENT_CLOSE' && session.relayWs === ws) {
+            if (session.clientWs.readyState === 1) session.clientWs.send(JSON.stringify(msg));
+            vpnSessions.delete(msg.sessionId);
           }
-          vpnSessions.delete(msg.sessionId);
         }
         return;
       }
@@ -126,6 +146,17 @@ wss.on('connection', (ws, req) => {
             type: 'SECURITY_ERROR',
             subdomain: cleanSubdomain,
             message: `Registro de túnel denegado por seguridad: ${authCheck.error}`
+          }));
+          return;
+        }
+
+        // The token names the node it was issued to ('*' = any node).
+        const tokenNode = authCheck.payload.nodeId;
+        if (tokenNode && tokenNode !== '*' && tokenNode !== nodeId) {
+          ws.send(JSON.stringify({
+            type: 'SECURITY_ERROR',
+            subdomain: cleanSubdomain,
+            message: 'Registro de túnel denegado: el token pertenece a otro nodo'
           }));
           return;
         }
@@ -157,7 +188,8 @@ wss.on('connection', (ws, req) => {
         const { requestId, statusCode, headers, body } = msg;
         const pending = pendingRequests.get(requestId);
 
-        if (!pending) {
+        // Only the tunnel that received the request may answer it.
+        if (!pending || pending.tunnelWs !== ws) {
           return;
         }
 
@@ -201,7 +233,11 @@ wss.on('connection', (ws, req) => {
       console.log(`[Gateway dVPN 🛡️] 🔌 dVPN Relay desconectado: ${boundNodeId}`);
     }
     for (const [sId, sess] of vpnSessions.entries()) {
-      if (sess.clientWs === ws || sess.relayWs === ws) {
+      if (sess.clientWs === ws) {
+        if (sess.relayWs.readyState === 1) sess.relayWs.send(JSON.stringify({ type: 'VPN_CLIENT_CLOSE', sessionId: sId }));
+        vpnSessions.delete(sId);
+      } else if (sess.relayWs === ws) {
+        if (sess.clientWs.readyState === 1) sess.clientWs.send(JSON.stringify({ type: 'VPN_CLOSED', sessionId: sId }));
         vpnSessions.delete(sId);
       }
     }
@@ -212,12 +248,25 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-console.log(`[Foxy Gateway] Tunnel WebSocket listening on ws://0.0.0.0:${TUNNEL_PORT}`);
+console.log(`[Foxy Gateway] Tunnel WebSocket listening on ws://${TUNNEL_HOST}:${TUNNEL_PORT}`);
 
 // -------------------------------------------------------------
 // 2. Public Ingress HTTP Server (Receives external traffic)
 // -------------------------------------------------------------
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Subdomains are [a-z0-9-] only, whatever source they come from, so they are
+// safe to echo back in HTML error pages.
 function extractSubdomain(req) {
+  const raw = extractRawSubdomain(req);
+  if (!raw) return null;
+  const clean = String(raw).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 63);
+  return clean || null;
+}
+
+function extractRawSubdomain(req) {
   // 1. Direct header
   if (req.headers['x-foxy-subdomain']) {
     return req.headers['x-foxy-subdomain'].toLowerCase();
@@ -226,7 +275,9 @@ function extractSubdomain(req) {
   // 2. Host header: tenant.domain.com or tenant.localhost:8080
   const host = (req.headers.host || '').split(':')[0].toLowerCase();
   const parts = host.split('.');
-  if (parts.length >= 2) {
+  // An IP address has no subdomain ("127.0.0.1" is not tenant "127")
+  const isIpHost = /^\d+(\.\d+){3}$/.test(host) || host.startsWith('[');
+  if (!isIpHost && parts.length >= 2) {
     const candidate = parts[0];
     if (candidate !== 'www' && candidate !== 'localhost' && candidate !== 'foxy') {
       return candidate;
@@ -330,7 +381,7 @@ const httpServer = http.createServer((req, res) => {
       `);
     }, 15000);
 
-    pendingRequests.set(requestId, { req, res, timer });
+    pendingRequests.set(requestId, { req, res, timer, tunnelWs: tunnel.ws });
 
     // Send payload to daemon
     tunnel.ws.send(JSON.stringify({
@@ -455,7 +506,7 @@ function serveGatewayPortal(req, res) {
             ${tunnels.map(([sub, t]) => `
               <tr>
                 <td><strong>${sub}</strong></td>
-                <td><code>${t.nodeId}</code></td>
+                <td><code>${escapeHtml(t.nodeId)}</code></td>
                 <td>${t.requestCount}</td>
                 <td>${(t.bytesTransferred / 1024).toFixed(1)} KB</td>
                 <td><a class="link-btn" href="/t/${sub}/" target="_blank">Abrir Servidor ↗</a></td>

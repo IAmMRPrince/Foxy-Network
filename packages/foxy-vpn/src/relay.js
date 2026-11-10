@@ -1,117 +1,164 @@
 // ==============================================================================
 // Foxy Network - dVPN Donor Exit Relay
-// Secure, Encrypted, Firewall-Protected Egress Gateway running on Donor Nodes
+// Encrypted egress gateway running on donor nodes, with a destination firewall
+// that protects the donor's own machine and local network.
 // ==============================================================================
 
 import net from 'node:net';
+import dns from 'node:dns/promises';
 import { CryptoTunnel } from './crypto-tunnel.js';
 
-// Safe outbound ports allowed on donor nodes (protects donor IP from spam & abusive scans)
-const ALLOWED_PORTS = new Set([
-  80,   // HTTP
-  443,  // HTTPS
-  8080, // HTTP Alternate
-  8443, // HTTPS Alternate
-  53,   // DNS
-  3000, 5000, 8000, 8888, 9000 // Common Web APIs & Microservices
-]);
+// Only web traffic leaves through a donor's connection.
+export const DEFAULT_ALLOWED_PORTS = [80, 443, 8080, 8443];
 
-const BLOCKED_PORTS = new Set([
-  25, 465, 587, // SMTP Mail Spam Prevention
-  22,           // SSH Brute-force Prevention
-  445, 139,     // Windows SMB / NetBIOS
-  23            // Telnet
-]);
+const MAX_SESSIONS = 64;
+const IDLE_TIMEOUT_MS = 30000;
+
+// Destinations a donor must never reach on behalf of a stranger: loopback,
+// private LANs, link-local (cloud metadata), CGNAT, multicast and reserved.
+const blockedNets = new net.BlockList();
+for (const [addr, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+  ['224.0.0.0', 4], ['240.0.0.0', 4]
+]) {
+  blockedNets.addSubnet(addr, prefix, 'ipv4');
+}
+for (const [addr, prefix] of [
+  ['::', 127],        // :: and ::1
+  ['64:ff9b::', 96],  // NAT64
+  ['fc00::', 7],      // unique local
+  ['fe80::', 10],     // link-local
+  ['ff00::', 8],      // multicast
+  ['2001:db8::', 32]  // documentation
+]) {
+  blockedNets.addSubnet(addr, prefix, 'ipv6');
+}
+
+/** True when `address` is a public, routable IP address. */
+export function isPublicAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return !blockedNets.check(address, 'ipv4');
+  if (family === 6) {
+    // IPv4-mapped IPv6 (::ffff:a.b.c.d) must be judged as IPv4
+    const mapped = address.toLowerCase().match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return !blockedNets.check(mapped[1], 'ipv4');
+    if (address.toLowerCase().startsWith('::ffff:')) return false;
+    return !blockedNets.check(address, 'ipv6');
+  }
+  return false;
+}
 
 export class VpnRelay {
-  constructor(sharedSecret = 'foxy-depin-cluster-shared-secret-v1') {
-    this.sharedSecret = sharedSecret;
+  constructor(options = {}) {
+    this.allowedPorts = new Set(options.allowedPorts || DEFAULT_ALLOWED_PORTS);
+    this.lookup = options.lookup || ((host) => dns.lookup(host, { all: true, verbatim: true }));
     this.activeSessions = new Map(); // sessionId -> { socket, sessionKey, targetHost, targetPort, bytesIn, bytesOut }
     this.totalBytesRouted = 0;
   }
 
-  /**
-   * Evaluates if target host/port is safe for the donor node to route
-   */
-  isTargetAllowed(host, port) {
-    const numPort = parseInt(port, 10);
-    if (BLOCKED_PORTS.has(numPort)) return false;
-    if (ALLOWED_PORTS.has(numPort)) return true;
-    // Allow general high web ports > 1024 except blocked ones
-    return numPort > 1024 && !BLOCKED_PORTS.has(numPort);
+  isPortAllowed(port) {
+    const numPort = Number(port);
+    return Number.isInteger(numPort) && this.allowedPorts.has(numPort);
   }
 
   /**
-   * Handles initiating an encrypted TCP stream to a remote host
+   * Resolves the destination ONCE and returns a public IP to connect to.
+   * Connecting to the resolved IP (not the hostname) prevents DNS rebinding.
    */
-  handleConnect(sessionId, targetHost, targetPort, sendCallback) {
-    if (!this.isTargetAllowed(targetHost, targetPort)) {
-      sendCallback({
-        type: 'VPN_ERROR',
-        sessionId,
-        error: `Puerto de destino :${targetPort} bloqueado por la política de seguridad del donante`
-      });
-      return;
+  async resolvePublicTarget(host) {
+    if (typeof host !== 'string' || host.length === 0 || host.length > 253) {
+      throw new Error('Host de destino inválido');
+    }
+    const bare = host.replace(/^\[|\]$/g, '');
+    if (net.isIP(bare)) {
+      if (!isPublicAddress(bare)) throw new Error('Destino en red privada o reservada bloqueado');
+      return bare;
+    }
+    const records = await this.lookup(bare);
+    const list = Array.isArray(records) ? records : [records];
+    if (list.length === 0) throw new Error('No se pudo resolver el host de destino');
+    // Refuse if ANY record points inside: a mixed answer is a rebinding attempt.
+    if (list.some(r => !isPublicAddress(r.address))) {
+      throw new Error('Destino en red privada o reservada bloqueado');
+    }
+    return list[0].address;
+  }
+
+  /**
+   * Opens an encrypted TCP stream to a remote host on behalf of a VPN client.
+   * `clientPublicKey` is the client's ephemeral X25519 key.
+   */
+  async handleConnect(sessionId, targetHost, targetPort, clientPublicKey, sendCallback) {
+    const fail = (error) => sendCallback({ type: 'VPN_ERROR', sessionId, error });
+
+    if (typeof sessionId !== 'string' || !sessionId || this.activeSessions.has(sessionId)) {
+      return fail('Sesión inválida o duplicada');
+    }
+    if (this.activeSessions.size >= MAX_SESSIONS) {
+      return fail('El nodo donante alcanzó su límite de sesiones dVPN');
+    }
+    if (!this.isPortAllowed(targetPort)) {
+      return fail(`Puerto de destino :${targetPort} bloqueado por la política de seguridad del donante`);
     }
 
-    const sessionKey = CryptoTunnel.deriveKey(this.sharedSecret, sessionId);
-
+    let sessionKey;
+    let relayPublicKey;
+    let address;
     try {
-      const socket = net.createConnection({ host: targetHost, port: targetPort }, () => {
-        sendCallback({
-          type: 'VPN_CONNECTED',
-          sessionId,
-          targetHost,
-          targetPort
-        });
-      });
-
-      socket.on('data', (chunk) => {
-        this.totalBytesRouted += chunk.length;
-        const session = this.activeSessions.get(sessionId);
-        if (session) session.bytesIn += chunk.length;
-
-        // Encrypt the incoming response before sending back over WebSocket tunnel
-        const encrypted = CryptoTunnel.encrypt(chunk, sessionKey);
-        sendCallback({
-          type: 'VPN_DATA_STREAM',
-          sessionId,
-          payload: encrypted
-        });
-      });
-
-      socket.on('end', () => {
-        sendCallback({ type: 'VPN_CLOSED', sessionId });
-        this.activeSessions.delete(sessionId);
-      });
-
-      socket.on('error', (err) => {
-        sendCallback({ type: 'VPN_ERROR', sessionId, error: err.message });
-        this.activeSessions.delete(sessionId);
-      });
-
-      socket.setTimeout(30000, () => {
-        socket.destroy();
-        this.activeSessions.delete(sessionId);
-      });
-
-      this.activeSessions.set(sessionId, {
-        socket,
-        sessionKey,
-        targetHost,
-        targetPort,
-        bytesIn: 0,
-        bytesOut: 0,
-        createdAt: Date.now()
-      });
+      const pair = CryptoTunnel.createEphemeralKeyPair();
+      relayPublicKey = pair.publicKey;
+      sessionKey = CryptoTunnel.deriveSessionKey(pair.privateKey, clientPublicKey, sessionId);
+      address = await this.resolvePublicTarget(targetHost);
     } catch (err) {
-      sendCallback({ type: 'VPN_ERROR', sessionId, error: err.message });
+      return fail(err.message);
     }
+
+    const session = {
+      socket: null,
+      sessionKey,
+      targetHost,
+      targetPort: Number(targetPort),
+      bytesIn: 0,
+      bytesOut: 0,
+      createdAt: Date.now()
+    };
+    this.activeSessions.set(sessionId, session);
+
+    const socket = net.createConnection({ host: address, port: Number(targetPort) }, () => {
+      sendCallback({ type: 'VPN_CONNECTED', sessionId, relayPublicKey });
+    });
+    session.socket = socket;
+
+    socket.on('data', (chunk) => {
+      this.totalBytesRouted += chunk.length;
+      session.bytesIn += chunk.length;
+      sendCallback({
+        type: 'VPN_DATA_STREAM',
+        sessionId,
+        payload: CryptoTunnel.encrypt(chunk, sessionKey)
+      });
+    });
+
+    socket.on('end', () => {
+      sendCallback({ type: 'VPN_CLOSED', sessionId });
+      this.activeSessions.delete(sessionId);
+    });
+
+    socket.on('error', (err) => {
+      fail(err.message);
+      this.activeSessions.delete(sessionId);
+    });
+
+    socket.setTimeout(IDLE_TIMEOUT_MS, () => {
+      socket.destroy();
+      sendCallback({ type: 'VPN_CLOSED', sessionId });
+      this.activeSessions.delete(sessionId);
+    });
   }
 
-  /**
-   * Handles incoming encrypted stream from client destined for target host
-   */
+  /** Handles an encrypted frame from the client destined for the target host */
   handleData(sessionId, encryptedPayload) {
     const session = this.activeSessions.get(sessionId);
     if (!session || !session.socket || session.socket.destroyed) {
@@ -130,22 +177,16 @@ export class VpnRelay {
     }
   }
 
-  /**
-   * Closes a specific session
-   */
   closeSession(sessionId) {
     const session = this.activeSessions.get(sessionId);
-    if (session && session.socket) {
-      session.socket.destroy();
+    if (session) {
+      if (session.socket) session.socket.destroy();
       this.activeSessions.delete(sessionId);
     }
   }
 
-  /**
-   * Closes all active sessions
-   */
   destroy() {
-    for (const [id, session] of this.activeSessions.entries()) {
+    for (const session of this.activeSessions.values()) {
       if (session.socket) session.socket.destroy();
     }
     this.activeSessions.clear();

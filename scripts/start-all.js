@@ -12,25 +12,25 @@ const services = [
   {
     name: 'Gateway',
     color: '\x1b[35m', // Magenta
-    cmd: 'node',
+    cmd: process.execPath,
     args: ['packages/foxy-gateway/src/index.js']
   },
   {
     name: 'Controller',
     color: '\x1b[34m', // Blue
-    cmd: 'node',
+    cmd: process.execPath,
     args: ['packages/foxy-controller/src/index.js']
   },
   {
     name: 'Daemon',
     color: '\x1b[33m', // Yellow
-    cmd: 'node',
+    cmd: process.execPath,
     args: ['packages/foxy-daemon/src/index.js']
   },
   {
     name: 'FoxyFinance',
     color: '\x1b[32m', // Green
-    cmd: 'node',
+    cmd: process.execPath,
     args: ['packages/foxy-finance-workload/src/index.js']
   }
 ];
@@ -41,7 +41,7 @@ services.forEach(svc => {
   const child = spawn(svc.cmd, svc.args, {
     cwd: rootDir,
     stdio: ['inherit', 'pipe', 'pipe'],
-    shell: true
+    shell: false
   });
 
   child.stdout.on('data', data => {

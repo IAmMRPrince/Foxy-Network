@@ -1,8 +1,44 @@
 #!/usr/bin/env node
 import process from 'node:process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const CONTROLLER_URL = process.env.FOXY_CONTROLLER_URL || 'http://localhost:4000';
 const GATEWAY_URL = process.env.FOXY_GATEWAY_URL || 'http://localhost:8080';
+const DAEMON_URL = process.env.FOXY_DAEMON_URL || 'http://127.0.0.1:4040';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/** Reads a local secret created by a Foxy service on this machine. */
+function readLocalSecret(name, envVar) {
+  if (envVar && process.env[envVar]) return process.env[envVar].trim();
+  const dirs = [process.env.FOXY_STATE_DIR, path.join(process.cwd(), '.foxy'), path.join(REPO_ROOT, '.foxy'),
+    path.join(REPO_ROOT, 'packages', 'foxy-daemon', '.foxy')].filter(Boolean);
+  for (const dir of dirs) {
+    try {
+      const value = fs.readFileSync(path.join(dir, name), 'utf-8').trim();
+      if (value) return value;
+    } catch {
+      // try the next location
+    }
+  }
+  return null;
+}
+
+/** Calls the donor daemon running on this machine. */
+async function daemonPost(route, body = {}) {
+  const token = readLocalSecret('daemon-token', 'FOXY_DAEMON_TOKEN');
+  if (!token) throw new Error('No se encontró el token del daemon local. ¿Está en ejecución en este equipo?');
+  const res = await fetch(`${DAEMON_URL}${route}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Foxy-Token': token },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
@@ -25,7 +61,13 @@ async function main() {
       await showBalance(args[1]);
       break;
     case 'claim':
-      await claimRewards(args[1], args[2]);
+      await claimRewards(args[1]);
+      break;
+    case 'link':
+      await linkFoxyFinance();
+      break;
+    case 'finance':
+      await handleFinanceCommand(args.slice(1));
       break;
     case 'vpn':
       await handleVpnCommand(args.slice(1));
@@ -99,7 +141,10 @@ async function deployApp(subdomain, appName) {
   try {
     const res = await fetch(`${CONTROLLER_URL}/api/deployments`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Foxy-Admin-Key': readLocalSecret('admin-key', 'FOXY_ADMIN_KEY') || ''
+      },
       body: JSON.stringify({
         subdomain,
         appName: appName || subdomain
@@ -186,37 +231,81 @@ async function showBalance(nodeId) {
   }
 }
 
-async function claimRewards(nodeId, walletAddress) {
-  let targetNode = nodeId;
-  if (!targetNode) {
-    const nodesRes = await fetch(`${CONTROLLER_URL}/api/nodes`);
-    const nodesData = await nodesRes.json();
-    targetNode = nodesData.nodes?.[0]?.id;
-  }
-
-  if (!targetNode) {
-    console.log('Uso: foxy claim <nodeId> [walletAddress]');
-    return;
-  }
-
+async function claimRewards(walletAddress) {
+  // Claims go through the local daemon: only the node itself can claim.
   try {
-    const res = await fetch(`${CONTROLLER_URL}/api/ledger/claim`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeId: targetNode, walletAddress })
-    });
-    const data = await res.json();
-    if (data.success) {
-      console.log(`\n🎉 ¡Reclamación de recompensas completada!`);
-      console.log(`Cantidad:    ${data.amount} $FOXY`);
-      console.log(`TxHash:      ${data.receipt.txHash}`);
-      console.log(`Destinatario:${data.receipt.to}`);
-      console.log(`Red:         ${data.receipt.network}\n`);
+    const data = await daemonPost('/api/claim-rewards', walletAddress ? { walletAddress } : {});
+    const r = data.receipt;
+    console.log(`\n🎉 Reclamo procesado (${r.settlement})`);
+    console.log(`Cantidad:     ${data.amount} $FOXY`);
+    console.log(`Destinatario: ${r.to}`);
+    if (r.settlement === 'ONCHAIN_VOUCHER') {
+      console.log(`Contrato:     ${r.contractAddress} (chainId ${r.chainId})`);
+      console.log(`Para acuñar:  claimContributionReward(${r.amountWei}, ${r.epoch}, ${r.signature})\n`);
     } else {
-      console.error(`Error al reclamar: ${data.error}`);
+      console.log(`Nota:         ${r.note}\n`);
     }
   } catch (e) {
-    console.error(`Error conectando con el orquestador: ${e.message}`);
+    console.error(`Error al reclamar: ${e.message}`);
+  }
+}
+
+async function linkFoxyFinance() {
+  try {
+    const data = await daemonPost('/api/finance/link-code');
+    console.log(`\n🔗 Código de vinculación con Foxy Finance: ${data.code}`);
+    console.log(`   Escríbelo en tu cuenta de Foxy Finance antes de ${new Date(data.expiresAt).toLocaleTimeString()}.\n`);
+  } catch (e) {
+    console.error(`Error generando el código: ${e.message}`);
+  }
+}
+
+async function handleFinanceCommand(subArgs) {
+  const sub = subArgs[0] || 'status';
+  try {
+    if (sub === 'link') return await linkFoxyFinance();
+
+    if (sub === 'pay') {
+      if (!subArgs[1]) return console.log('Uso: foxy finance pay <planId>   (ej. FOXY_FINANCE_TRADER_PRO)');
+      const data = await daemonPost('/api/finance/pay', { planId: subArgs[1] });
+      console.log(`\n🔥 Plan ${data.payment.planId} pagado con ${data.payment.amountFoxy} $FOXY (quemados). Saldo: ${data.balance} $FOXY\n`);
+      return;
+    }
+
+    if (sub === 'dispatch') {
+      // Operator / partner side: needs the partner secret of this controller.
+      const secret = readLocalSecret('finance-api-secret', 'FOXY_FINANCE_API_SECRET');
+      if (!secret) return console.error('No se encontró el secreto de la API de Foxy Finance en este equipo.');
+      const { FoxyNetworkClient } = await import('../../foxy-finance-workload/src/network-client.js');
+      const client = new FoxyNetworkClient({ baseUrl: CONTROLLER_URL, secret, keyId: process.env.FOXY_FINANCE_KEY_ID || 'foxy-finance' });
+      const type = subArgs[1] || 'monte_carlo_gbm';
+      const replicas = parseInt(subArgs[2] || '1', 10);
+      console.log(`\n📈 Enviando trabajo '${type}' (réplicas: ${replicas})...`);
+      const job = await client.runJob(type, {}, { replicas, timeoutMs: 90000 });
+      console.log(`Estado:        ${job.status}${job.error ? ' — ' + job.error : ''}`);
+      console.log(`Unidades FCC:  ${job.computeUnits} por nodo`);
+      if (job.verification) console.log(`Verificación:  ${job.verification.mode} (${job.verification.agreeing}/${job.verification.replicas} de acuerdo)`);
+      if (job.result) console.log(`Resultado:     ${JSON.stringify(job.result)}`);
+      console.log('');
+      return;
+    }
+
+    const [telemetry, overview, board] = await Promise.all([
+      fetch(`${CONTROLLER_URL}/api/foxy-finance/telemetry`).then(r => r.json()),
+      fetch(`${CONTROLLER_URL}/api/premium/overview`).then(r => r.json()),
+      fetch(`${CONTROLLER_URL}/api/ledger/leaderboard`).then(r => r.json())
+    ]);
+    const t = overview.treasury;
+    console.log(`\n📈 === FOXY FINANCE ↔ FOXY NETWORK ===\n`);
+    console.log(`Nodos online:               ${telemetry.network.onlineNodes} ${JSON.stringify(telemetry.network.onlineNodesByClass)}`);
+    console.log(`Nodos vinculados a cuentas: ${telemetry.network.linkedNodes}`);
+    console.log(`Trabajos:                   ${telemetry.network.jobs.completed} completados, ${telemetry.network.jobs.failed} fallidos, ${telemetry.network.jobs.queued + telemetry.network.jobs.running} en curso`);
+    console.log(`Unidades FCC procesadas:    ${telemetry.totalComputeUnitsProcessed}`);
+    console.log(`$FOXY acreditados / quemados: ${board.networkTotalMinted} / ${board.networkTotalBurned}`);
+    console.log(`\nModelo contable (simulación, no son fondos reales):`);
+    console.log(`  Ingresos: $${t.totalRevenueUsd}  |  Fundador 40%: $${t.founderProfitUsd}  |  Reserva 45%: $${t.donorBackingPoolUsd}  |  Quema 15%: $${t.totalBurnedUsd}\n`);
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
   }
 }
 
@@ -245,7 +334,7 @@ async function handleVpnCommand(subArgs) {
     console.log(`Sesiones Cifradas Activas:  ${data.activeSessionsCount}`);
     if (data.relays?.length > 0) {
       console.log(`Nodos repetidores disponibles:`);
-      data.relays.forEach(r => console.log(`  - 🌐 [${r}] (Cifrado AES-256-GCM / Zero-Logs)`));
+      data.relays.forEach(r => console.log(`  - 🌐 [${r}] (X25519 + AES-256-GCM)`));
     } else {
       console.log(`Aún no hay nodos repetidores registrados.`);
     }
@@ -271,6 +360,7 @@ async function showTokenInfo() {
     - Tiempo de Uptime:   0.25 $FOXY / minuto
     - Ancho de Banda Web: 1.50 $FOXY / MB servido
     - Tráfico dVPN:       2.00 $FOXY / MB cifrado enrutado
+    - Cómputo verificado: 0.50 $FOXY / unidad (trabajos de Foxy Finance)
     - Épocas de Pago:     Cada 30 segundos
 
   Contrato Inteligente:
@@ -292,7 +382,10 @@ Comandos disponibles:
   deploy <subdominio>   Despliega un servicio o aplicación en un nodo donante
   leaderboard           Muestra la tabla de clasificación y total acuñado en la red
   balance [nodeId]      Consulta el saldo de tokens $FOXY y recibos de un nodo
-  claim [nodeId] [addr] Reclama y transfiere las recompensas acumuladas (firmadas Web3)
+  claim [addr]          Reclama las recompensas del nodo local (voucher firmado por el oráculo)
+  finance [status|link|pay <plan>|dispatch [tipo] [réplicas]]
+                        Estado del enlace con Foxy Finance, pago con $FOXY y trabajos de prueba
+  link                  Genera un código para vincular este nodo con tu cuenta de Foxy Finance
   vpn [status|connect]  Consulta o inicia el túnel cliente dVPN cifrado (127.0.0.1:1080)
   token                 Muestra detalles del token $FOXY, economía y smart contracts
   help                  Muestra este menú de ayuda

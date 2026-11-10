@@ -1,27 +1,27 @@
 // ==============================================================================
 // Foxy Network - dVPN Client Proxy
-// Starts a local HTTP CONNECT & SOCKS5 Proxy on 127.0.0.1:1080
+// Starts a local HTTP / HTTP CONNECT proxy on 127.0.0.1:1080
 // Encrypts and tunnels outbound traffic through decentralized Foxy donor nodes
 // ==============================================================================
 
 import http from 'node:http';
-import net from 'node:net';
+import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
 import { WebSocket } from 'ws';
 import { CryptoTunnel } from './crypto-tunnel.js';
 
 const PROXY_PORT = parseInt(process.env.FOXY_VPN_LOCAL_PORT || '1080', 10);
 const GATEWAY_TUNNEL_URL = process.env.FOXY_GATEWAY_TUNNEL_URL || 'ws://127.0.0.1:8081';
-const SHARED_SECRET = process.env.FOXY_CLUSTER_SECRET || 'foxy-depin-cluster-shared-secret-v1';
+const CONNECT_TIMEOUT_MS = 15000;
 
 export class FoxyVpnClient {
   constructor(options = {}) {
-    this.port = options.port || PROXY_PORT;
+    this.port = options.port ?? PROXY_PORT;
     this.gatewayUrl = options.gatewayUrl || GATEWAY_TUNNEL_URL;
-    this.sharedSecret = options.sharedSecret || SHARED_SECRET;
     this.ws = null;
     this.server = null;
-    this.sessions = new Map(); // sessionId -> { clientSocket, sessionKey }
+    this.stopped = false;
+    this.sessions = new Map(); // sessionId -> { clientSocket, privateKey, sessionKey, onConnected, timer }
     this.stats = {
       bytesEncrypted: 0,
       bytesDecrypted: 0,
@@ -32,7 +32,7 @@ export class FoxyVpnClient {
 
   async start() {
     await this.connectToGateway();
-    this.startLocalProxy();
+    await this.startLocalProxy();
   }
 
   connectToGateway() {
@@ -42,7 +42,6 @@ export class FoxyVpnClient {
 
       this.ws.on('open', () => {
         console.log(`[dVPN Client 🔒] ✅ Conectado a la red de túneles dVPN.`);
-        // Register as VPN client
         this.ws.send(JSON.stringify({
           type: 'VPN_CLIENT_REGISTER',
           clientId: `vpn-client-${crypto.randomBytes(4).toString('hex')}`
@@ -52,16 +51,18 @@ export class FoxyVpnClient {
 
       this.ws.on('message', (data) => {
         try {
-          const msg = JSON.parse(data.toString());
-          this.handleGatewayMessage(msg);
+          this.handleGatewayMessage(JSON.parse(data.toString()));
         } catch (e) {
           // Ignore malformed
         }
       });
 
       this.ws.on('close', () => {
+        // Sessions cannot survive a gateway reconnect: their relay is gone.
+        for (const sessionId of Array.from(this.sessions.keys())) this.endSession(sessionId);
+        if (this.stopped) return;
         console.log(`[dVPN Client 🔒] Conexión de túnel cerrada. Reintentando en 3s...`);
-        setTimeout(() => this.connectToGateway(), 3000);
+        setTimeout(() => { if (!this.stopped) this.connectToGateway(); }, 3000);
       });
 
       this.ws.on('error', (err) => {
@@ -70,13 +71,80 @@ export class FoxyVpnClient {
     });
   }
 
+  isOnline() {
+    return this.ws && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  endSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    clearTimeout(session.timer);
+    if (session.clientSocket && !session.clientSocket.destroyed) session.clientSocket.end();
+    this.sessions.delete(sessionId);
+    this.stats.activeConnections = this.sessions.size;
+  }
+
+  /** Opens a tunnel session. `onConnected` runs once the session key is agreed. */
+  openSession(clientSocket, targetHost, targetPort, onConnected) {
+    const sessionId = crypto.randomUUID();
+    const { privateKey, publicKey } = CryptoTunnel.createEphemeralKeyPair();
+
+    this.stats.totalSessions++;
+    this.sessions.set(sessionId, {
+      clientSocket,
+      privateKey,
+      sessionKey: null,
+      onConnected,
+      timer: setTimeout(() => this.endSession(sessionId), CONNECT_TIMEOUT_MS)
+    });
+    this.stats.activeConnections = this.sessions.size;
+
+    this.ws.send(JSON.stringify({
+      type: 'VPN_REQUEST_CONNECT',
+      sessionId,
+      targetHost,
+      targetPort,
+      clientPublicKey: publicKey
+    }));
+    return sessionId;
+  }
+
+  sendEncrypted(sessionId, buffer) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.sessionKey || !this.isOnline()) return false;
+    this.stats.bytesEncrypted += buffer.length;
+    this.ws.send(JSON.stringify({
+      type: 'VPN_CLIENT_DATA',
+      sessionId,
+      payload: CryptoTunnel.encrypt(buffer, session.sessionKey)
+    }));
+    return true;
+  }
+
+  closeRemote(sessionId) {
+    if (this.isOnline()) {
+      this.ws.send(JSON.stringify({ type: 'VPN_CLIENT_CLOSE', sessionId }));
+    }
+    this.endSession(sessionId);
+  }
+
   handleGatewayMessage(msg) {
     const session = this.sessions.get(msg.sessionId);
     if (!session) return;
 
     if (msg.type === 'VPN_CONNECTED') {
+      try {
+        session.sessionKey = CryptoTunnel.deriveSessionKey(session.privateKey, msg.relayPublicKey, msg.sessionId);
+        session.privateKey = null;
+      } catch (err) {
+        console.error(`[dVPN Client 🔒] Intercambio de claves fallido: ${err.message}`);
+        this.closeRemote(msg.sessionId);
+        return;
+      }
+      clearTimeout(session.timer);
       if (session.onConnected) session.onConnected();
     } else if (msg.type === 'VPN_DATA_STREAM') {
+      if (!session.sessionKey) return;
       try {
         const decrypted = CryptoTunnel.decrypt(msg.payload, session.sessionKey);
         this.stats.bytesDecrypted += decrypted.length;
@@ -87,152 +155,101 @@ export class FoxyVpnClient {
         console.error(`[dVPN Client 🔒] Error descifrando paquete: ${err.message}`);
       }
     } else if (msg.type === 'VPN_CLOSED' || msg.type === 'VPN_ERROR') {
-      if (session.clientSocket && !session.clientSocket.destroyed) {
-        session.clientSocket.end();
+      if (msg.type === 'VPN_ERROR' && !session.sessionKey && session.clientSocket && !session.clientSocket.destroyed) {
+        session.clientSocket.write('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
       }
-      this.sessions.delete(msg.sessionId);
-      this.stats.activeConnections = this.sessions.size;
+      this.endSession(msg.sessionId);
     }
   }
 
   startLocalProxy() {
+    // Plain HTTP forward proxy: the request is replayed through the tunnel and
+    // the raw response is written back on the client's socket.
     this.server = http.createServer((req, res) => {
-      // Standard HTTP forward proxy fallback
-      const url = new URL(req.url);
-      const targetHost = url.hostname;
-      const targetPort = url.port || 80;
-
-      const sessionId = crypto.randomUUID();
-      const sessionKey = CryptoTunnel.deriveKey(this.sharedSecret, sessionId);
-
-      this.stats.totalSessions++;
-      this.stats.activeConnections++;
-
-      this.sessions.set(sessionId, {
-        clientSocket: res.socket,
-        sessionKey
-      });
-
-      // Send connect request through encrypted tunnel
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({
-          type: 'VPN_REQUEST_CONNECT',
-          sessionId,
-          targetHost,
-          targetPort
-        }));
-
-        // Send raw request
-        const rawReq = `${req.method} ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${targetHost}\r\nConnection: close\r\n\r\n`;
-        const encData = CryptoTunnel.encrypt(Buffer.from(rawReq), sessionKey);
-        this.stats.bytesEncrypted += rawReq.length;
-
-        this.ws.send(JSON.stringify({
-          type: 'VPN_CLIENT_DATA',
-          sessionId,
-          payload: encData
-        }));
-      } else {
+      let url;
+      try {
+        url = new URL(req.url);
+      } catch {
+        res.writeHead(400);
+        res.end('Foxy dVPN: URL de proxy inválida.');
+        return;
+      }
+      if (url.protocol !== 'http:' || !this.isOnline()) {
         res.writeHead(502);
         res.end('Foxy dVPN: Red no disponible.');
+        return;
       }
+
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const headers = { ...req.headers, host: url.host, connection: 'close' };
+        delete headers['proxy-connection'];
+        delete headers['proxy-authorization'];
+        const head = `${req.method} ${url.pathname}${url.search} HTTP/1.1\r\n` +
+          Object.entries(headers).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\r\n') +
+          '\r\n\r\n';
+
+        const socket = res.socket;
+        const sessionId = this.openSession(socket, url.hostname, parseInt(url.port || '80', 10), () => {
+          this.sendEncrypted(sessionId, Buffer.concat([Buffer.from(head), body]));
+        });
+        socket.on('close', () => this.closeRemote(sessionId));
+      });
     });
 
-    // Handle HTTPS CONNECT tunnel (Used by browsers for encrypted SSL/TLS traffic)
+    // HTTPS CONNECT tunnel (used by browsers for TLS traffic)
     this.server.on('connect', (req, clientSocket, head) => {
-      const [targetHost, targetPortStr] = req.url.split(':');
-      const targetPort = parseInt(targetPortStr || '443', 10);
-      const sessionId = crypto.randomUUID();
-      const sessionKey = CryptoTunnel.deriveKey(this.sharedSecret, sessionId);
+      const sep = req.url.lastIndexOf(':');
+      const targetHost = sep > 0 ? req.url.slice(0, sep) : req.url;
+      const targetPort = parseInt(sep > 0 ? req.url.slice(sep + 1) : '443', 10);
 
-      this.stats.totalSessions++;
-      this.stats.activeConnections++;
-
-      const sessionObj = {
-        clientSocket,
-        sessionKey,
-        onConnected: () => {
-          clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: Foxy-dVPN-Encrypted-Relay\r\n\r\n');
-          if (head && head.length > 0) {
-            const encHead = CryptoTunnel.encrypt(head, sessionKey);
-            this.stats.bytesEncrypted += head.length;
-            this.ws.send(JSON.stringify({
-              type: 'VPN_CLIENT_DATA',
-              sessionId,
-              payload: encHead
-            }));
-          }
-        }
-      };
-
-      this.sessions.set(sessionId, sessionObj);
-
-      clientSocket.on('data', (chunk) => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          const encrypted = CryptoTunnel.encrypt(chunk, sessionKey);
-          this.stats.bytesEncrypted += chunk.length;
-          this.ws.send(JSON.stringify({
-            type: 'VPN_CLIENT_DATA',
-            sessionId,
-            payload: encrypted
-          }));
-        }
-      });
-
-      clientSocket.on('end', () => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'VPN_CLIENT_CLOSE', sessionId }));
-        }
-        this.sessions.delete(sessionId);
-        this.stats.activeConnections = this.sessions.size;
-      });
-
-      clientSocket.on('error', () => {
-        this.sessions.delete(sessionId);
-        this.stats.activeConnections = this.sessions.size;
-      });
-
-      // Request tunnel connection
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({
-          type: 'VPN_REQUEST_CONNECT',
-          sessionId,
-          targetHost,
-          targetPort
-        }));
-      } else {
-        clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-        clientSocket.destroy();
+      if (!this.isOnline()) {
+        clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+        return;
       }
+
+      const sessionId = this.openSession(clientSocket, targetHost, targetPort, () => {
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: Foxy-dVPN\r\n\r\n');
+        if (head && head.length > 0) this.sendEncrypted(sessionId, head);
+        clientSocket.on('data', (chunk) => this.sendEncrypted(sessionId, chunk));
+      });
+
+      clientSocket.on('end', () => this.closeRemote(sessionId));
+      clientSocket.on('error', () => this.closeRemote(sessionId));
     });
 
-    this.server.listen(this.port, '127.0.0.1', () => {
-      console.log(`
+    return new Promise((resolve) => {
+      this.server.listen(this.port, '127.0.0.1', () => {
+        this.port = this.server.address().port;
+        console.log(`
 🛡️ ========================================================
        FOXY NETWORK — DECENTRALIZED ENCRYPTED VPN (dVPN)
 ========================================================
-  Proxy Local Activo: http://127.0.0.1:${this.port}
-  Cifrado de Túnel:  AES-256-GCM con rotación por sesión
-  Política:          Zero-Logs (Sin registro de destino)
-  Recompensas:       2.00 $FOXY por MB transferido al donante
+  Proxy HTTP local:  http://127.0.0.1:${this.port}
+  Cifrado de túnel:  X25519 + AES-256-GCM (clave efímera por sesión)
 
   Uso rápido:
     curl -x http://127.0.0.1:${this.port} https://api.ipify.org
-    O configura el proxy de tu navegador en 127.0.0.1:${this.port}
+    O configura el proxy HTTP de tu navegador en 127.0.0.1:${this.port}
 ========================================================
 `);
+        resolve();
+      });
     });
   }
 
   stop() {
+    this.stopped = true;
     if (this.server) this.server.close();
     if (this.ws) this.ws.close();
-    this.sessions.clear();
+    for (const sessionId of Array.from(this.sessions.keys())) this.endSession(sessionId);
   }
 }
 
 // Standalone execution if run directly
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('client.js')) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const client = new FoxyVpnClient();
   client.start();
 }

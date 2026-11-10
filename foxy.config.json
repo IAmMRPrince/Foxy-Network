@@ -20,9 +20,13 @@
   "vpn": {
     "enabled": true,
     "localProxyPort": 1080,
-    "allowedPorts": [80, 443, 8080, 8443, 53],
-    "blockedPorts": [25, 465, 587, 22, 445],
-    "encryption": "AES-256-GCM"
+    "allowedPorts": [
+      80,
+      443,
+      8080,
+      8443
+    ],
+    "encryption": "X25519 + AES-256-GCM"
   },
   "token": {
     "symbol": "$FOXY",
@@ -32,11 +36,9 @@
     "settlementEpochMs": 30000,
     "rates": {
       "uptimePerMinute": 0.25,
-      "bandwidthPerMb": 1.50,
-      "vpnBandwidthPerMb": 2.00
+      "bandwidthPerMb": 1.5,
+      "vpnBandwidthPerMb": 2.0,
+      "computePerUnit": 3.5
     }
-  },
-  "security": {
-    "clusterSecret": "foxy-depin-cluster-shared-secret-v1"
   }
 }

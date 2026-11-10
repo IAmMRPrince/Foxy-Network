@@ -3,6 +3,8 @@
 // Monetization, Founder Margins, and Foxy Finance Institutional Demand
 // ==============================================================================
 
+import { randomUUID } from 'node:crypto';
+
 export const PREMIUM_PLANS = {
   COMMUNITY_FREE: {
     id: 'COMMUNITY_FREE',
@@ -42,6 +44,22 @@ export const PREMIUM_PLANS = {
       'Asignación de IPs estáticas de salida'
     ]
   },
+  FOXY_FINANCE_TRADER_PRO: {
+    id: 'FOXY_FINANCE_TRADER_PRO',
+    name: 'Foxy Finance Trader Pro',
+    priceUsd: 49.00,
+    priceFoxy: 325.00, // ~20% discount if paid with $FOXY
+    billingCycle: 'monthly',
+    features: ['Plan Trader Pro de Foxy Finance']
+  },
+  FOXY_FINANCE_INSTITUTIONAL_DESK: {
+    id: 'FOXY_FINANCE_INSTITUTIONAL_DESK',
+    name: 'Foxy Finance Institutional Desk',
+    priceUsd: 199.00,
+    priceFoxy: 1320.00,
+    billingCycle: 'monthly',
+    features: ['Plan Institutional Desk de Foxy Finance']
+  },
   FOXY_FINANCE_INSTITUTIONAL: {
     id: 'FOXY_FINANCE_INSTITUTIONAL',
     name: 'Foxy Finance Sovereign Cloud Cluster',
@@ -64,6 +82,12 @@ export const REVENUE_DISTRIBUTION = {
   DEFLATIONARY_BURN_PERCENT: 15.0
 };
 
+// Internal accounting units
+export const CREDIT_RATES_USD = {
+  FCC: 0.20, // Foxy Compute Credit: one compute unit of a partner job
+  FXC: 0.01  // Foxy Credit: bandwidth / dVPN unit
+};
+
 // Industry benchmark rates (based on AWS EC2 / DigitalOcean pricing in USD)
 export const CLOUD_BENCHMARK_RATES_USD = {
   CPU_CORE_HOUR: 0.025,       // $0.025 per CPU core-hour
@@ -73,16 +97,23 @@ export const CLOUD_BENCHMARK_RATES_USD = {
 };
 
 export class PremiumEngine {
-  constructor(sharedSecret = 'foxy-depin-cluster-shared-secret-v1') {
-    this.sharedSecret = sharedSecret;
+  /**
+   * NOTE: this engine is an ACCOUNTING SIMULATION. It models how revenue would
+   * be split; it does not hold funds, move money or set a market price.
+   */
+  constructor() {
     this.activeSubscriptions = new Map(); // subId -> subscription
     this.treasury = {
-      totalRevenueUsd: 1250.00, // Seed bootstrap valuation
-      founderProfitUsd: 500.00, // 40%
-      donorBackingPoolUsd: 562.50, // 45% backing liquidity
-      totalBurnedUsd: 187.50,   // 15%
-      foxyTokenFloorPriceUsd: 0.12 // Derived token valuation backed by reserve
+      simulated: true,
+      totalRevenueUsd: 0,
+      founderProfitUsd: 0,
+      donorBackingPoolUsd: 0,
+      totalBurnedUsd: 0,
+      // Reference value only: reserve / tokens credited. Not a price, not a guarantee.
+      foxyTokenFloorPriceUsd: 0,
+      totalFccConsumed: 0
     };
+    this.creditedSupply = 0;
     this.foxyFinanceWorkloads = [];
   }
 
@@ -116,10 +147,10 @@ export class PremiumEngine {
    * Processes a premium service purchase (in USD or $FOXY)
    */
   subscribePlan(planId, subscriberAddress, paymentMethod = 'USD') {
-    const plan = PREMIUM_PLANS[planId];
+    const plan = Object.hasOwn(PREMIUM_PLANS, planId) ? PREMIUM_PLANS[planId] : null;
     if (!plan) throw new Error(`Plan no reconocido: ${planId}`);
 
-    const subId = `sub-${Math.random().toString(36).slice(2, 9)}`;
+    const subId = `sub-${randomUUID().slice(0, 8)}`;
     const revenueUsd = plan.priceUsd;
 
     // Distribute Revenue
@@ -158,8 +189,8 @@ export class PremiumEngine {
   /**
    * Ingests computational workloads from Foxy Finance
    */
-  recordFoxyFinanceCompute({ workloadName, computeUnits, billingUsd, timestamp }) {
-    const revenueUsd = billingUsd || (computeUnits * 0.15);
+  recordFoxyFinanceCompute({ workloadName, computeUnits, billingUsd, timestamp, jobId = null }) {
+    const revenueUsd = Number.isFinite(billingUsd) && billingUsd !== null ? billingUsd : (computeUnits * CREDIT_RATES_USD.FCC);
 
     const founderProfit = (revenueUsd * REVENUE_DISTRIBUTION.FOUNDER_MARGIN_PERCENT) / 100;
     const donorReserve = (revenueUsd * REVENUE_DISTRIBUTION.DONOR_BACKING_RESERVE_PERCENT) / 100;
@@ -170,12 +201,13 @@ export class PremiumEngine {
     this.treasury.donorBackingPoolUsd += donorReserve;
     this.treasury.totalBurnedUsd += burnShare;
 
+    this.treasury.totalFccConsumed += computeUnits;
     this.updateTokenValuation();
 
     const record = {
-      id: `ff-job-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      client: 'Foxy Finance DeFi Ecosystem',
-      workloadName: workloadName || 'DeFi Arbitrage & Ledger Settlement Engine',
+      id: jobId || `ff-job-${randomUUID().slice(0, 8)}`,
+      client: 'Foxy Finance',
+      workloadName: workloadName || 'compute',
       computeUnits,
       revenueUsd: parseFloat(revenueUsd.toFixed(2)),
       founderShareUsd: parseFloat(founderProfit.toFixed(2)),
@@ -189,11 +221,12 @@ export class PremiumEngine {
     return record;
   }
 
-  updateTokenValuation() {
-    // Dynamic floor price = Backing pool / active circulating supply estimation
-    const estimatedCirculatingSupply = 450000; // e.g. community circulated
-    const derivedPrice = (this.treasury.donorBackingPoolUsd * 100) / estimatedCirculatingSupply;
-    this.treasury.foxyTokenFloorPriceUsd = Math.max(0.10, parseFloat((0.10 + derivedPrice * 0.05).toFixed(4)));
+  /** @param {number} [creditedSupply] total $FOXY credited to donors so far */
+  updateTokenValuation(creditedSupply = null) {
+    if (creditedSupply !== null) this.creditedSupply = Math.max(0, Number(creditedSupply) || 0);
+    this.treasury.foxyTokenFloorPriceUsd = this.creditedSupply > 0
+      ? parseFloat((this.treasury.donorBackingPoolUsd / this.creditedSupply).toFixed(6))
+      : 0;
   }
 
   getTreasuryOverview() {
@@ -207,6 +240,7 @@ export class PremiumEngine {
       },
       distributionModel: REVENUE_DISTRIBUTION,
       benchmarkRates: CLOUD_BENCHMARK_RATES_USD,
+      creditRates: CREDIT_RATES_USD,
       plans: PREMIUM_PLANS,
       foxyFinanceRecentCompute: this.foxyFinanceWorkloads.slice(0, 5)
     };

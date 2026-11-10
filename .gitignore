@@ -10,6 +10,10 @@ lerna-debug.log*
 .env.local
 .env.*.local
 .foxy/
+**/.foxy/
+.foxy-network-secret
+*.pem
+*.key
 
 # Operating System & IDE
 .DS_Store
@@ -30,3 +34,6 @@ logs/
 dist/
 build/
 coverage/
+
+# Contracts build output
+packages/foxy-contracts/artifacts/
