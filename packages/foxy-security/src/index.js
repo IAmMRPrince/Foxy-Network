@@ -156,3 +156,128 @@ export function verifyData(publicKeyPem, data, signatureBase64) {
     return false;
   }
 }
+
+// -------------------------------------------------------------
+// 5. Foxy Finance Benefit & Anti-IDOR Tokens (TenantContext Bridge)
+// -------------------------------------------------------------
+export function computeAntiIdorHash(userId, nodeId, walletAddress = '') {
+  return crypto
+    .createHash('sha256')
+    .update(`${String(userId)}:${String(nodeId)}:${String(walletAddress || '').toLowerCase()}`)
+    .digest('hex');
+}
+
+/**
+ * Issues a signed benefit token certifying that a Foxy Finance tenant (userId)
+ * owns an active donor node (nodeId) and qualifies for a hardware-based SaaS discount.
+ */
+export function issueFoxyFinanceBenefitToken({
+  userId,
+  nodeId,
+  walletAddress = '',
+  hardwareClass = 'DESKTOP_PC',
+  discountPercent = 70,
+  freeProQuant = false,
+  expiresInSeconds = 3600,
+  secret = null
+}) {
+  if (!userId || !nodeId) {
+    throw new Error('userId and nodeId are required to issue a Foxy Finance benefit token');
+  }
+
+  const signingKey = secret || getNetworkSecret();
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const cleanUserId = String(userId).trim();
+  const cleanNodeId = String(nodeId).trim();
+  const cleanWallet = String(walletAddress || '').trim();
+
+  const payload = {
+    sub: 'foxy-finance:benefit',
+    tenantUserId: cleanUserId,
+    nodeId: cleanNodeId,
+    walletAddress: cleanWallet,
+    hardwareClass,
+    discountPercent: Number(discountPercent),
+    freeProQuant: Boolean(freeProQuant),
+    antiIdorHash: computeAntiIdorHash(cleanUserId, cleanNodeId, cleanWallet),
+    iat: now,
+    exp: now + expiresInSeconds,
+    scope: 'foxy:finance:discount'
+  };
+
+  const encodedHeader = base64urlEncode(JSON.stringify(header));
+  const encodedPayload = base64urlEncode(JSON.stringify(payload));
+  const dataToSign = `${encodedHeader}.${encodedPayload}`;
+
+  const signature = crypto
+    .createHmac('sha256', signingKey)
+    .update(dataToSign)
+    .digest();
+
+  return `${dataToSign}.${base64urlEncode(signature)}`;
+}
+
+/**
+ * Validates a Foxy Finance benefit token and enforces strict Anti-IDOR tenant isolation.
+ */
+export function verifyFoxyFinanceBenefitToken(token, expectedUserId = null, secret = null) {
+  if (!token || typeof token !== 'string') {
+    return { valid: false, error: 'Benefit token missing or malformed' };
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    return { valid: false, error: 'Invalid JWT format' };
+  }
+
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  const signingKey = secret || getNetworkSecret();
+
+  const expectedSig = base64urlEncode(
+    crypto
+      .createHmac('sha256', signingKey)
+      .update(`${encodedHeader}.${encodedPayload}`)
+      .digest()
+  );
+
+  if (encodedSignature !== expectedSig) {
+    return { valid: false, error: 'Invalid cryptographic signature - Benefit token forgery detected' };
+  }
+
+  try {
+    const payload = JSON.parse(base64urlDecode(encodedPayload));
+    const now = Math.floor(Date.now() / 1000);
+
+    if (payload.exp && payload.exp < now) {
+      return { valid: false, error: 'Benefit token has expired' };
+    }
+
+    if (payload.scope !== 'foxy:finance:discount') {
+      return { valid: false, error: `Invalid token scope: ${payload.scope}` };
+    }
+
+    const expectedAntiIdor = computeAntiIdorHash(
+      payload.tenantUserId,
+      payload.nodeId,
+      payload.walletAddress
+    );
+
+    if (payload.antiIdorHash !== expectedAntiIdor) {
+      return { valid: false, error: 'Anti-IDOR integrity hash mismatch' };
+    }
+
+    if (expectedUserId !== null && expectedUserId !== undefined) {
+      if (String(payload.tenantUserId) !== String(expectedUserId).trim()) {
+        return {
+          valid: false,
+          error: `Anti-IDOR Violation: token belongs to tenant '${payload.tenantUserId}', cannot be used by '${expectedUserId}'`
+        };
+      }
+    }
+
+    return { valid: true, payload };
+  } catch (err) {
+    return { valid: false, error: 'Failed to parse benefit token payload: ' + err.message };
+  }
+}

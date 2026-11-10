@@ -72,19 +72,34 @@ function addLog(message, type = 'info') {
 }
 
 // -------------------------------------------------------------
-// 1. Initial Workload Setup
+// 1. Initial Workload Setup (Demo App + FOXY FINANCE SaaS Hosting)
 // -------------------------------------------------------------
 async function initializeBaseWorkload() {
   addLog(`Motor de ejecución detectado: ${engine.runtime.name}`, 'success');
   try {
+    // 1. Host FOXY FINANCE SaaS (https://www.foxyfianance.fox & https://www.foxyfinance.fox)
+    const financePort = parseInt(process.env.FOXY_FINANCE_PORT || '8000', 10);
+    await engine.spawnWorkload({
+      id: 'foxy-finance-saas',
+      name: 'FOXY FINANCE SaaS (www.foxyfianance.fox)',
+      type: 'foxy-finance',
+      subdomain: 'foxy-finance',
+      foxDomain: 'https://www.foxyfianance.fox',
+      targetPort: financePort,
+      quota: state.quota
+    });
+    addLog(`🌐 Hosting activo para FOXY FINANCE en https://www.foxyfianance.fox (-> 127.0.0.1:${financePort})`, 'success');
+
+    // 2. Host Demo Cloud App
     await engine.spawnWorkload({
       id: 'demo-app',
       name: 'Foxy Cloud Demo App',
       type: 'static',
       subdomain: state.subdomain,
+      foxDomain: 'https://www.foxynetwork.fox',
       quota: state.quota
     });
-    addLog(`Carga base 'demo-app' lista para recibir tráfico.`, 'success');
+    addLog(`Carga base 'demo-app' y portal 'www.foxynetwork.fox' listos para recibir tráfico.`, 'success');
   } catch (err) {
     addLog(`Error al inicializar carga base: ${err.message}`, 'error');
   }
@@ -115,6 +130,10 @@ function connectToTunnelGateway() {
 
     // Register primary subdomain
     registerTunnelForSubdomain(state.subdomain);
+
+    // Register FOXY FINANCE official & alias subdomains (for https://www.foxyfianance.fox & https://www.foxyfinance.fox)
+    registerTunnelForSubdomain('foxy-finance');
+    registerTunnelForSubdomain('foxyfianance');
 
     // Register any other active workloads
     for (const w of engine.workloads.values()) {
@@ -229,11 +248,21 @@ function registerTunnelForSubdomain(subdomain, customToken = null) {
 }
 
 function forwardToWorkload(requestId, method, url, incomingHeaders, body, isBase64, subdomain) {
-  // Find which workload matches this subdomain
+  // Find which workload matches this subdomain (including foxyfianance alias -> foxy-finance)
+  const cleanSub = String(subdomain || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+  const normalizedSub = (cleanSub === 'foxyfianance' || cleanSub === 'foxyfinance') ? 'foxy-finance' : cleanSub;
   let targetPort = null;
-  const match = Array.from(engine.workloads.values()).find(
-    w => w.subdomain === subdomain && w.status === 'RUNNING'
+  let match = Array.from(engine.workloads.values()).find(
+    w => w.subdomain === normalizedSub && w.status === 'RUNNING'
   );
+
+  // If the requested subdomain is the daemon's primary subdomain, map to 'demo-app' if needed
+  if (!match && normalizedSub === state.subdomain) {
+    const demoWorkload = engine.workloads.get('demo-app');
+    if (demoWorkload && demoWorkload.status === 'RUNNING') {
+      match = demoWorkload;
+    }
+  }
 
   if (match) {
     targetPort = match.port;
@@ -335,6 +364,7 @@ async function registerWithController() {
         tokensMap.set(state.subdomain, data.authToken);
       }
       addLog(`Registrado exitosamente en Foxy Controller (${CONTROLLER_URL}) [Token JWT guardado]`, 'success');
+      await sendHeartbeat();
     }
   } catch (err) {
     // Retry during next heartbeat
@@ -385,12 +415,38 @@ async function sendHeartbeat() {
         for (const cmd of data.pendingCommands) {
           if (cmd.type === 'DEPLOY_WORKLOAD') {
             await handleDeployCommand(cmd);
+          } else if (cmd.type === 'EXECUTE_QUANT_TASK') {
+            await handleQuantTaskCommand(cmd);
           }
         }
       }
     }
   } catch (err) {
     // Silent catch
+  }
+}
+
+async function handleQuantTaskCommand(cmd) {
+  try {
+    const task = cmd.task || cmd;
+    const output = engine.executeQuantWorkload(task);
+    addLog(
+      `📈 [Foxy Finance PoC] Ejecutada tarea cuantitativa '${task.workloadName || task.type}' (Hash: ${output.resultHash.slice(0, 10)}...)`,
+      'success'
+    );
+
+    await fetch(`${CONTROLLER_URL}/api/foxy-finance/submit-result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        taskId: task.taskId,
+        nodeId: state.nodeId,
+        walletAddress: walletManager.getActiveAddress(),
+        output
+      })
+    });
+  } catch (err) {
+    addLog(`Error ejecutando tarea cuantitativa Foxy Finance: ${err.message}`, 'error');
   }
 }
 
@@ -630,6 +686,10 @@ const dashboardServer = http.createServer((req, res) => {
         const { subdomain } = JSON.parse(body);
         if (subdomain) {
           state.subdomain = subdomain.toLowerCase().replace(/[^a-z0-9-]/g, '');
+          const demoWorkload = engine.workloads.get('demo-app');
+          if (demoWorkload) {
+            demoWorkload.subdomain = state.subdomain;
+          }
           addLog(`Subdominio principal actualizado a [${state.subdomain}]. Registrando...`);
           registerTunnelForSubdomain(state.subdomain);
         }
@@ -637,6 +697,54 @@ const dashboardServer = http.createServer((req, res) => {
         res.end(JSON.stringify({ success: true, subdomain: state.subdomain }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Link Donor Node with Foxy Finance Tenant Account (Anti-IDOR + Hardware Discount)
+  if (req.method === 'POST' && url.pathname === '/api/foxy-finance/link') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { tenantUserId } = JSON.parse(body || '{}');
+        if (!tenantUserId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'tenantUserId is required' }));
+          return;
+        }
+        const linkRes = await fetch(`${CONTROLLER_URL}/api/foxy-finance/link-account`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nodeId: state.nodeId,
+            tenantUserId,
+            walletAddress: walletManager.getActiveAddress(),
+            specs: {
+              cores: os.cpus().length,
+              totalRamMb: Math.round(os.totalmem() / 1024 / 1024),
+              platform: os.platform(),
+              arch: os.arch()
+            }
+          })
+        });
+        const linkData = await linkRes.json();
+        if (linkRes.ok && linkData.success) {
+          state.foxyFinanceBenefit = linkData;
+          addLog(
+            `🔗 Vinculado a Foxy Finance (${tenantUserId}): ${linkData.binding.discountPercent}% Descuento [${linkData.binding.hardwareClass}]`,
+            'success'
+          );
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(linkData));
+        } else {
+          res.writeHead(linkRes.status || 400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: linkData.error || 'Error linking Foxy Finance account' }));
+        }
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
       }
     });

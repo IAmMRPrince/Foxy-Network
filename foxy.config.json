@@ -3,7 +3,40 @@
   "version": "0.2.0",
   "gateway": {
     "tunnelUrl": "ws://127.0.0.1:8081",
-    "httpPort": 8080
+    "httpPort": 8080,
+    "httpsPort": 8443,
+    "domains": {
+      "www.foxynetwork.fox": {
+        "target": "__portal__",
+        "name": "Foxy Network Portal Oficial",
+        "ssl": true
+      },
+      "foxynetwork.fox": {
+        "target": "__portal__",
+        "name": "Foxy Network Portal Oficial",
+        "ssl": true
+      },
+      "www.foxyfianance.fox": {
+        "target": "foxy-finance",
+        "name": "Foxy Finance SaaS (Alias)",
+        "ssl": true
+      },
+      "foxyfianance.fox": {
+        "target": "foxy-finance",
+        "name": "Foxy Finance SaaS (Alias)",
+        "ssl": true
+      },
+      "www.foxyfinance.fox": {
+        "target": "foxy-finance",
+        "name": "Foxy Finance SaaS Oficial",
+        "ssl": true
+      },
+      "foxyfinance.fox": {
+        "target": "foxy-finance",
+        "name": "Foxy Finance SaaS Oficial",
+        "ssl": true
+      }
+    }
   },
   "controller": {
     "url": "http://127.0.0.1:4000"

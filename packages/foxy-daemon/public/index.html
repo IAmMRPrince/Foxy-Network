@@ -217,6 +217,7 @@
     .type-node { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
     .type-docker { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
     .type-static { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+    .type-foxy-finance { background: rgba(255, 107, 53, 0.2); color: #ff6b35; border: 1px solid rgba(255, 107, 53, 0.4); }
 
     .btn-action {
       padding: 4px 8px;
@@ -612,9 +613,12 @@
         } else {
           tbody.innerHTML = workloads.map(w => {
             const directUrl = 'http://localhost:8080/t/' + w.subdomain + '/';
+            const foxDomainBadge = w.foxDomain
+              ? `<div style="margin-top:3px"><a href="${w.foxDomain}" target="_blank" style="color:var(--cyan);font-size:0.75rem;text-decoration:none;font-family:'JetBrains Mono',monospace">🌐 ${w.foxDomain} ↗</a></div>`
+              : '';
             return `
               <tr>
-                <td><strong>${w.name}</strong></td>
+                <td><strong>${w.name}</strong>${foxDomainBadge}</td>
                 <td><span class="type-pill type-${w.type}">${w.type}</span></td>
                 <td><code>${w.subdomain}</code></td>
                 <td><code>:${w.port}</code></td>

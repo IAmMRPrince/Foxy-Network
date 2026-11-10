@@ -42,6 +42,32 @@ export const PREMIUM_PLANS = {
       'Asignación de IPs estáticas de salida'
     ]
   },
+  FOXY_FINANCE_TRADER_PRO: {
+    id: 'FOXY_FINANCE_TRADER_PRO',
+    name: 'Foxy Finance Trader Pro SaaS',
+    priceUsd: 49.00,
+    priceFoxy: 325.00, // 20% discount when paying with $FOXY
+    billingCycle: 'monthly',
+    features: [
+      'Señales cuantitativas en tiempo real y microestructura OBI',
+      'Backtesting con barras de dólar (López de Prado) y criterio de Kelly',
+      'Simulaciones de riesgo Monte Carlo VaR/CVaR (50,000 caminos)',
+      '20% de descuento pagando con token nativo $FOXY'
+    ]
+  },
+  FOXY_FINANCE_INSTITUTIONAL_DESK: {
+    id: 'FOXY_FINANCE_INSTITUTIONAL_DESK',
+    name: 'Foxy Finance Institutional / Desk',
+    priceUsd: 199.00,
+    priceFoxy: 1320.00, // 20% discount when paying with $FOXY
+    billingCycle: 'monthly',
+    features: [
+      'Conexión multi-broker (Binance, Alpaca, MetaTrader 5)',
+      'Modelos LSTM/GRU personalizados y filtros de anomalías con Autoencoder',
+      'Canal dVPN residencial de ultra baja latencia (<20ms)',
+      'Prioridad de ejecución en el clúster DePIN Foxy Network'
+    ]
+  },
   FOXY_FINANCE_INSTITUTIONAL: {
     id: 'FOXY_FINANCE_INSTITUTIONAL',
     name: 'Foxy Finance Sovereign Cloud Cluster',
@@ -69,7 +95,9 @@ export const CLOUD_BENCHMARK_RATES_USD = {
   CPU_CORE_HOUR: 0.025,       // $0.025 per CPU core-hour
   RAM_GB_HOUR: 0.005,         // $0.005 per GB RAM-hour
   BANDWIDTH_WEB_GB: 0.08,     // $0.08 per GB web bandwidth
-  DVPN_TRAFFIC_GB: 0.15       // $0.15 per GB encrypted residential VPN egress
+  DVPN_TRAFFIC_GB: 0.15,      // $0.15 per GB encrypted residential VPN egress
+  FCC_COMPUTE_UNIT_USD: 0.20, // $0.20 USD per Foxy Compute Credit (1 FCC)
+  FXC_CREDIT_USD: 0.01        // $0.01 USD per Foxy Credit (1 FXC)
 };
 
 export class PremiumEngine {
@@ -81,7 +109,12 @@ export class PremiumEngine {
       founderProfitUsd: 500.00, // 40%
       donorBackingPoolUsd: 562.50, // 45% backing liquidity
       totalBurnedUsd: 187.50,   // 15%
-      foxyTokenFloorPriceUsd: 0.12 // Derived token valuation backed by reserve
+      foxyTokenFloorPriceUsd: 0.12, // Derived token valuation backed by reserve
+      fxcRateUsd: CLOUD_BENCHMARK_RATES_USD.FXC_CREDIT_USD,
+      fccRateUsd: CLOUD_BENCHMARK_RATES_USD.FCC_COMPUTE_UNIT_USD,
+      totalFccConsumed: 0,
+      totalFxcMinted: 125000,
+      totalFoxyBurnedFromVault: 1562.50
     };
     this.foxyFinanceWorkloads = [];
   }
@@ -89,7 +122,7 @@ export class PremiumEngine {
   /**
    * Calculates the exact fair market value in USD of resources donated by a node
    */
-  calculateResourceUsdValue({ uptimeSeconds, bytesServed, vpnBytesServed, specs }) {
+  calculateResourceUsdValue({ uptimeSeconds, bytesServed, vpnBytesServed, computeUnits = 0, specs }) {
     const hours = uptimeSeconds / 3600;
     const cores = specs?.cores || 2;
     const ramGb = (specs?.totalRamMb || 2048) / 1024;
@@ -97,7 +130,8 @@ export class PremiumEngine {
     const vpnGb = vpnBytesServed / (1024 * 1024 * 1024);
 
     const computeVal = (cores * CLOUD_BENCHMARK_RATES_USD.CPU_CORE_HOUR * hours) +
-                       (ramGb * CLOUD_BENCHMARK_RATES_USD.RAM_GB_HOUR * hours);
+                       (ramGb * CLOUD_BENCHMARK_RATES_USD.RAM_GB_HOUR * hours) +
+                       (computeUnits * CLOUD_BENCHMARK_RATES_USD.FCC_COMPUTE_UNIT_USD);
     const bandwidthVal = webGb * CLOUD_BENCHMARK_RATES_USD.BANDWIDTH_WEB_GB;
     const vpnVal = vpnGb * CLOUD_BENCHMARK_RATES_USD.DVPN_TRAFFIC_GB;
 
@@ -113,26 +147,39 @@ export class PremiumEngine {
   }
 
   /**
-   * Processes a premium service purchase (in USD or $FOXY)
+   * Processes a premium service purchase (in USD or $FOXY with 20% discount)
    */
-  subscribePlan(planId, subscriberAddress, paymentMethod = 'USD') {
+  subscribePlan(planId, subscriberAddress, paymentMethod = 'USD', discountPercent = 0) {
     const plan = PREMIUM_PLANS[planId];
     if (!plan) throw new Error(`Plan no reconocido: ${planId}`);
 
     const subId = `sub-${Math.random().toString(36).slice(2, 9)}`;
-    const revenueUsd = plan.priceUsd;
+    const clampedDiscount = Math.max(0, Math.min(100, Number(discountPercent || 0)));
+    const discountFactor = (100 - clampedDiscount) / 100;
 
-    // Distribute Revenue
-    const founderProfit = (revenueUsd * REVENUE_DISTRIBUTION.FOUNDER_MARGIN_PERCENT) / 100;
-    const donorReserve = (revenueUsd * REVENUE_DISTRIBUTION.DONOR_BACKING_RESERVE_PERCENT) / 100;
-    const burnShare = (revenueUsd * REVENUE_DISTRIBUTION.DEFLATIONARY_BURN_PERCENT) / 100;
+    const isFoxyPayment = String(paymentMethod).toUpperCase() === 'FOXY';
+    const effectiveUsd = parseFloat((plan.priceUsd * discountFactor).toFixed(2));
+    const effectiveFoxy = parseFloat((plan.priceFoxy * discountFactor).toFixed(4));
 
-    this.treasury.totalRevenueUsd += revenueUsd;
+    // Distribute Revenue (40% Founder / 45% Donor Backing Reserve / 15% Buyback & Burn)
+    const founderProfit = (effectiveUsd * REVENUE_DISTRIBUTION.FOUNDER_MARGIN_PERCENT) / 100;
+    const donorReserve = (effectiveUsd * REVENUE_DISTRIBUTION.DONOR_BACKING_RESERVE_PERCENT) / 100;
+    const burnShare = (effectiveUsd * REVENUE_DISTRIBUTION.DEFLATIONARY_BURN_PERCENT) / 100;
+
+    const burnedFoxyTokens = isFoxyPayment
+      ? parseFloat(((effectiveFoxy * REVENUE_DISTRIBUTION.DEFLATIONARY_BURN_PERCENT) / 100).toFixed(4))
+      : parseFloat((burnShare / Math.max(0.01, this.treasury.foxyTokenFloorPriceUsd)).toFixed(4));
+
+    this.treasury.totalRevenueUsd += effectiveUsd;
     this.treasury.founderProfitUsd += founderProfit;
     this.treasury.donorBackingPoolUsd += donorReserve;
     this.treasury.totalBurnedUsd += burnShare;
+    this.treasury.totalFoxyBurnedFromVault = parseFloat(
+      (this.treasury.totalFoxyBurnedFromVault + burnedFoxyTokens).toFixed(4)
+    );
+    this.treasury.totalFxcMinted += Math.round(effectiveUsd / this.treasury.fxcRateUsd);
 
-    // Recalculate token floor price based on increased treasury backing
+    // Recalculate token floor price based on increased treasury backing and reduced supply
     this.updateTokenValuation();
 
     const subRecord = {
@@ -140,12 +187,15 @@ export class PremiumEngine {
       planId,
       planName: plan.name,
       subscriber: subscriberAddress,
-      paymentMethod,
-      amountPaid: paymentMethod === 'FOXY' ? plan.priceFoxy : plan.priceUsd,
+      paymentMethod: isFoxyPayment ? 'FOXY' : 'USD',
+      discountAppliedPercent: clampedDiscount,
+      amountPaid: isFoxyPayment ? effectiveFoxy : effectiveUsd,
+      burnedFoxyTokens,
       revenueDistribution: {
         founderProfitUsd: parseFloat(founderProfit.toFixed(2)),
         donorReserveUsd: parseFloat(donorReserve.toFixed(2)),
-        burnedUsd: parseFloat(burnShare.toFixed(2))
+        burnedUsd: parseFloat(burnShare.toFixed(2)),
+        burnedFoxyTokens
       },
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       status: 'ACTIVE'
@@ -156,19 +206,36 @@ export class PremiumEngine {
   }
 
   /**
-   * Ingests computational workloads from Foxy Finance
+   * Ingests computational workloads from Foxy Finance (FCC consumption)
    */
-  recordFoxyFinanceCompute({ workloadName, computeUnits, billingUsd, timestamp }) {
-    const revenueUsd = billingUsd || (computeUnits * 0.15);
+  recordFoxyFinanceCompute({
+    workloadName,
+    workloadType = 'MONTE_CARLO_VAR',
+    computeUnits = 2,
+    billingUsd,
+    verifiedByNodes = [],
+    consensusEpsilon = 0,
+    jobMetrics = null,
+    timestamp
+  }) {
+    const fccConsumed = Math.max(1, Number(computeUnits || 2));
+    const revenueUsd = billingUsd !== undefined ? Number(billingUsd) : (fccConsumed * this.treasury.fccRateUsd);
 
     const founderProfit = (revenueUsd * REVENUE_DISTRIBUTION.FOUNDER_MARGIN_PERCENT) / 100;
     const donorReserve = (revenueUsd * REVENUE_DISTRIBUTION.DONOR_BACKING_RESERVE_PERCENT) / 100;
     const burnShare = (revenueUsd * REVENUE_DISTRIBUTION.DEFLATIONARY_BURN_PERCENT) / 100;
+    const burnedFoxyTokens = parseFloat(
+      (burnShare / Math.max(0.01, this.treasury.foxyTokenFloorPriceUsd)).toFixed(4)
+    );
 
     this.treasury.totalRevenueUsd += revenueUsd;
     this.treasury.founderProfitUsd += founderProfit;
     this.treasury.donorBackingPoolUsd += donorReserve;
     this.treasury.totalBurnedUsd += burnShare;
+    this.treasury.totalFccConsumed += fccConsumed;
+    this.treasury.totalFoxyBurnedFromVault = parseFloat(
+      (this.treasury.totalFoxyBurnedFromVault + burnedFoxyTokens).toFixed(4)
+    );
 
     this.updateTokenValuation();
 
@@ -176,10 +243,17 @@ export class PremiumEngine {
       id: `ff-job-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       client: 'Foxy Finance DeFi Ecosystem',
       workloadName: workloadName || 'DeFi Arbitrage & Ledger Settlement Engine',
-      computeUnits,
+      workloadType,
+      computeUnits: fccConsumed,
+      fccConsumed,
       revenueUsd: parseFloat(revenueUsd.toFixed(2)),
       founderShareUsd: parseFloat(founderProfit.toFixed(2)),
       donorReserveUsd: parseFloat(donorReserve.toFixed(2)),
+      burnedUsd: parseFloat(burnShare.toFixed(2)),
+      burnedFoxyTokens,
+      verifiedByNodes,
+      consensusEpsilon,
+      jobMetrics,
       timestamp: timestamp || new Date().toISOString()
     };
 
@@ -190,9 +264,9 @@ export class PremiumEngine {
   }
 
   updateTokenValuation() {
-    // Dynamic floor price = Backing pool / active circulating supply estimation
-    const estimatedCirculatingSupply = 450000; // e.g. community circulated
-    const derivedPrice = (this.treasury.donorBackingPoolUsd * 100) / estimatedCirculatingSupply;
+    // Dynamic floor price = Backing pool / active circulating supply adjusted for vault burns
+    const effectiveCirculatingSupply = Math.max(100000, 450000 - (this.treasury.totalFoxyBurnedFromVault || 0));
+    const derivedPrice = (this.treasury.donorBackingPoolUsd * 100) / effectiveCirculatingSupply;
     this.treasury.foxyTokenFloorPriceUsd = Math.max(0.10, parseFloat((0.10 + derivedPrice * 0.05).toFixed(4)));
   }
 
@@ -203,7 +277,12 @@ export class PremiumEngine {
         founderProfitUsd: parseFloat(this.treasury.founderProfitUsd.toFixed(2)),
         donorBackingPoolUsd: parseFloat(this.treasury.donorBackingPoolUsd.toFixed(2)),
         totalBurnedUsd: parseFloat(this.treasury.totalBurnedUsd.toFixed(2)),
-        foxyTokenFloorPriceUsd: this.treasury.foxyTokenFloorPriceUsd
+        foxyTokenFloorPriceUsd: this.treasury.foxyTokenFloorPriceUsd,
+        fxcRateUsd: this.treasury.fxcRateUsd,
+        fccRateUsd: this.treasury.fccRateUsd,
+        totalFccConsumed: this.treasury.totalFccConsumed,
+        totalFxcMinted: this.treasury.totalFxcMinted,
+        totalFoxyBurnedFromVault: this.treasury.totalFoxyBurnedFromVault
       },
       distributionModel: REVENUE_DISTRIBUTION,
       benchmarkRates: CLOUD_BENCHMARK_RATES_USD,

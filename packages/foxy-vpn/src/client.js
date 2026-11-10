@@ -12,7 +12,15 @@ import { CryptoTunnel } from './crypto-tunnel.js';
 
 const PROXY_PORT = parseInt(process.env.FOXY_VPN_LOCAL_PORT || '1080', 10);
 const GATEWAY_TUNNEL_URL = process.env.FOXY_GATEWAY_TUNNEL_URL || 'ws://127.0.0.1:8081';
+const GATEWAY_HTTP_PORT = parseInt(process.env.FOXY_GATEWAY_HTTP_PORT || '8080', 10);
+const GATEWAY_HTTPS_PORT = parseInt(process.env.FOXY_GATEWAY_HTTPS_PORT || '8443', 10);
 const SHARED_SECRET = process.env.FOXY_CLUSTER_SECRET || 'foxy-depin-cluster-shared-secret-v1';
+
+function isFoxDomain(hostname) {
+  if (!hostname) return false;
+  const h = hostname.toLowerCase().trim();
+  return h.endsWith('.fox');
+}
 
 export class FoxyVpnClient {
   constructor(options = {}) {
@@ -100,7 +108,27 @@ export class FoxyVpnClient {
       // Standard HTTP forward proxy fallback
       const url = new URL(req.url);
       const targetHost = url.hostname;
-      const targetPort = url.port || 80;
+      const targetPort = parseInt(url.port || '80', 10);
+
+      // Direct local resolution for .fox decentralized domains (www.foxynetwork.fox, www.foxyfianance.fox)
+      if (isFoxDomain(targetHost)) {
+        const proxyReq = http.request({
+          hostname: '127.0.0.1',
+          port: GATEWAY_HTTP_PORT,
+          path: url.pathname + url.search,
+          method: req.method,
+          headers: { ...req.headers, host: targetHost }
+        }, (proxyRes) => {
+          res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+          proxyRes.pipe(res);
+        });
+        proxyReq.on('error', (err) => {
+          res.writeHead(502);
+          res.end(`Foxy DNS (.fox): Error conectando al Gateway local (${err.message})`);
+        });
+        req.pipe(proxyReq);
+        return;
+      }
 
       const sessionId = crypto.randomUUID();
       const sessionKey = CryptoTunnel.deriveKey(this.sharedSecret, sessionId);
@@ -142,6 +170,27 @@ export class FoxyVpnClient {
     this.server.on('connect', (req, clientSocket, head) => {
       const [targetHost, targetPortStr] = req.url.split(':');
       const targetPort = parseInt(targetPortStr || '443', 10);
+
+      // Direct local TLS/HTTP tunnel resolution for .fox decentralized domains
+      if (isFoxDomain(targetHost)) {
+        const localTargetPort = (targetPort === 80 || targetPort === GATEWAY_HTTP_PORT)
+          ? GATEWAY_HTTP_PORT
+          : GATEWAY_HTTPS_PORT;
+
+        const gwSocket = net.connect(localTargetPort, '127.0.0.1', () => {
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: Foxy-DNS-Gateway\r\n\r\n');
+          if (head && head.length > 0) gwSocket.write(head);
+          gwSocket.pipe(clientSocket);
+          clientSocket.pipe(gwSocket);
+        });
+        gwSocket.on('error', () => {
+          clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+          clientSocket.destroy();
+        });
+        clientSocket.on('error', () => gwSocket.destroy());
+        return;
+      }
+
       const sessionId = crypto.randomUUID();
       const sessionKey = CryptoTunnel.deriveKey(this.sharedSecret, sessionId);
 

@@ -56,8 +56,16 @@ export class VpnRelay {
 
     const sessionKey = CryptoTunnel.deriveKey(this.sharedSecret, sessionId);
 
+    // Resolve decentralized .fox TLD to local Foxy Gateway on the donor/gateway node
+    let connectHost = targetHost;
+    let connectPort = parseInt(targetPort, 10);
+    if (typeof targetHost === 'string' && targetHost.toLowerCase().endsWith('.fox')) {
+      connectHost = '127.0.0.1';
+      connectPort = (connectPort === 80 || connectPort === 8080) ? 8080 : 8443;
+    }
+
     try {
-      const socket = net.createConnection({ host: targetHost, port: targetPort }, () => {
+      const socket = net.createConnection({ host: connectHost, port: connectPort }, () => {
         sendCallback({
           type: 'VPN_CONNECTED',
           sessionId,

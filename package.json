@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "start": "node scripts/start-all.js",
+    "test": "node scripts/test-foxy-finance-bridge.js",
     "donor": "npm --workspace=foxy-daemon start",
     "start:gateway": "npm --workspace=foxy-gateway start",
     "start:controller": "npm --workspace=foxy-controller start",

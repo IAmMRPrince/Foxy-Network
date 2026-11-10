@@ -33,6 +33,10 @@ contract FoxyTreasuryVault {
     mapping(address => bool) public isInstitutionalPayer;
     mapping(address => uint256) public institutionalVolume;
 
+    // Anti-IDOR Tenant <-> Donor Wallet On-Chain Bindings
+    mapping(bytes32 => address) public tenantNodeBinding;
+    mapping(address => bytes32) public walletTenantBinding;
+
     // Premium Subscription Tiers (in Wei / native currency or stablecoins)
     struct PremiumPlan {
         string name;
@@ -45,6 +49,8 @@ contract FoxyTreasuryVault {
 
     // Events
     event PremiumPurchased(address indexed subscriber, bytes32 indexed planId, uint256 amount);
+    event PaidWithFoxyToken(address indexed payer, bytes32 indexed planId, uint256 totalFoxy, uint256 burnedFoxy);
+    event FoxyFinanceTenantBound(bytes32 indexed tenantIdHash, address indexed donorWallet);
     event FoxyFinanceComputePaid(address indexed entity, uint256 amount, string workloadType);
     event RevenueDistributed(uint256 founderAmount, uint256 donorReserveAmount, uint256 burnAmount);
     event TokensBoughtAndBurned(uint256 tokenAmount, uint256 costBasis);
@@ -65,6 +71,8 @@ contract FoxyTreasuryVault {
         // Initialize default premium plans
         _createPlan("PRO_TUNNEL", "Foxy Pro Dedicated Tunnel & Custom SSL", 0.05 ether, 30 days);
         _createPlan("ENTERPRISE_DVPN", "Foxy Enterprise dVPN Business Pool", 0.12 ether, 30 days);
+        _createPlan("FOXY_FINANCE_TRADER_PRO", "Foxy Finance Trader Pro SaaS", 0.02 ether, 30 days);
+        _createPlan("FOXY_FINANCE_INSTITUTIONAL_DESK", "Foxy Finance Institutional Desk", 0.08 ether, 30 days);
         _createPlan("FOXY_FINANCE_COMPUTE", "Foxy Finance Cloud Processing Block", 0.25 ether, 30 days);
     }
 
@@ -83,6 +91,63 @@ contract FoxyTreasuryVault {
         _distributeRevenue(msg.value);
 
         emit PremiumPurchased(msg.sender, planId, msg.value);
+    }
+
+    /**
+     * @notice Pays a Foxy Finance or Foxy Network subscription directly with $FOXY tokens (20% discount tier).
+     *         Distributes 40% to Founder Wallet, 45% to Donor Backing Reserve, and permanently burns 15%.
+     * @param planId Identifier of the subscription plan
+     * @param foxyAmount Amount of $FOXY tokens (18 decimals) to pay
+     */
+    function paySubscriptionWithFoxy(bytes32 planId, uint256 foxyAmount) external {
+        require(foxyAmount > 0, "FoxyTreasury: foxyAmount must be > 0");
+        PremiumPlan memory plan = plans[planId];
+        require(plan.isActive, "FoxyTreasury: plan not active");
+
+        // Transfer $FOXY from subscriber to Vault
+        bool transferred = foxyToken.transferFrom(msg.sender, address(this), foxyAmount);
+        require(transferred, "FoxyTreasury: token transfer failed");
+
+        uint256 founderTokens = (foxyAmount * founderFeeBps) / 10000;
+        uint256 donorReserveTokens = (foxyAmount * donorReserveBps) / 10000;
+        uint256 burnTokens = foxyAmount - founderTokens - donorReserveTokens;
+
+        // 1. Send 40% Founder Share in $FOXY to Founder Wallet
+        if (founderTokens > 0) {
+            require(foxyToken.transfer(founderWallet, founderTokens), "FoxyTreasury: founder token transfer failed");
+        }
+
+        // 2. Retain 45% Donor Reserve in Vault
+        totalDonorRewardsDisbursed += donorReserveTokens;
+
+        // 3. Deflationary Burn of 15% $FOXY
+        if (burnTokens > 0) {
+            foxyToken.burnForService(burnTokens, "FOXY_FINANCE_SUBSCRIPTION_BURN");
+            totalTokensBurned += burnTokens;
+            emit TokensBoughtAndBurned(burnTokens, burnTokens);
+        }
+
+        emit PaidWithFoxyToken(msg.sender, planId, foxyAmount, burnTokens);
+    }
+
+    /**
+     * @notice Binds a Foxy Finance tenant ID hash to a donor wallet with Anti-IDOR enforcement.
+     */
+    function bindFoxyFinanceTenant(bytes32 tenantIdHash, address donorWallet) external {
+        require(tenantIdHash != bytes32(0), "FoxyTreasury: invalid tenant hash");
+        require(donorWallet != address(0), "FoxyTreasury: zero wallet address");
+        require(msg.sender == donorWallet || msg.sender == owner, "FoxyTreasury: unauthorized caller");
+
+        address existingWallet = tenantNodeBinding[tenantIdHash];
+        require(existingWallet == address(0) || existingWallet == donorWallet, "FoxyTreasury: Anti-IDOR tenant already bound");
+
+        bytes32 existingTenant = walletTenantBinding[donorWallet];
+        require(existingTenant == bytes32(0) || existingTenant == tenantIdHash, "FoxyTreasury: Anti-IDOR wallet already bound");
+
+        tenantNodeBinding[tenantIdHash] = donorWallet;
+        walletTenantBinding[donorWallet] = tenantIdHash;
+
+        emit FoxyFinanceTenantBound(tenantIdHash, donorWallet);
     }
 
     /**

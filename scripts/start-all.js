@@ -28,6 +28,12 @@ const services = [
     args: ['packages/foxy-daemon/src/index.js']
   },
   {
+    name: 'dVPN-DNS',
+    color: '\x1b[36m', // Cyan
+    cmd: 'node',
+    args: ['packages/foxy-vpn/src/client.js']
+  },
+  {
     name: 'FoxyFinance',
     color: '\x1b[32m', // Green
     cmd: 'node',

@@ -1,14 +1,21 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { issueSubdomainToken } from '../../foxy-security/src/index.js';
+import {
+  issueSubdomainToken,
+  issueFoxyFinanceBenefitToken,
+  verifyFoxyFinanceBenefitToken
+} from '../../foxy-security/src/index.js';
+import { executeSovereignQuantTask } from '../../foxy-daemon/src/workload-engine.js';
 import { FoxyLedger, TOKENOMICS_CONFIG } from './ledger.js';
-import { PremiumEngine } from './premium-tiers.js';
+import { PremiumEngine, PREMIUM_PLANS } from './premium-tiers.js';
 
 const CONTROLLER_PORT = parseInt(process.env.FOXY_CONTROLLER_PORT || '4000', 10);
 
-// In-memory registry, Tokenomics Ledger & Premium Treasury Engine
+// In-memory registry, Tokenomics Ledger, Premium Treasury Engine & Quant Task Queue
 const nodes = new Map();
 const deployments = new Map();
+const quantTasks = new Map(); // taskId -> { taskId, seed, type, referenceOutput, assignedNodes, submissions }
+const pendingQuantTasksByNode = new Map(); // nodeId -> [task]
 const ledger = new FoxyLedger();
 const premiumEngine = new PremiumEngine();
 
@@ -163,13 +170,25 @@ const server = http.createServer((req, res) => {
       const account = ledger.getAccount(nodeId, data.walletAddress);
 
       // Check if there are pending deployments for this node
-      const pendingForThis = Array.from(deployments.values()).filter(d => d.assignedNodeId === nodeId && d.status !== 'RUNNING');
+      const pendingForThis = Array.from(deployments.values()).filter(
+        d => d.assignedNodeId === nodeId && d.status !== 'RUNNING'
+      );
+
+      // Mark delivered deployments as RUNNING so subsequent heartbeats do not re-spawn them
+      for (const dep of pendingForThis) {
+        dep.status = 'RUNNING';
+      }
+
+      // Check if there are pending Foxy Finance quant tasks queued for this node
+      const queuedQuant = pendingQuantTasksByNode.get(nodeId) || [];
+      pendingQuantTasksByNode.set(nodeId, []);
 
       // Calculate fair market value of donated resources in USD
       const usdValue = premiumEngine.calculateResourceUsdValue({
         uptimeSeconds: (account.epochsSettled * 30) + (account.pendingUptimeSeconds || 30),
         bytesServed: (node.telemetry?.bytesServed || 0),
         vpnBytesServed: (node.telemetry?.vpnBytesServed || 0),
+        computeUnits: account.lifetimeComputeUnits || 0,
         specs: node.specs
       });
 
@@ -179,20 +198,31 @@ const server = http.createServer((req, res) => {
         rewards: {
           balance: account.balance,
           lifetimeEarnings: account.lifetimeEarnings,
+          lifetimeComputeUnits: account.lifetimeComputeUnits,
+          burnedTokens: account.burnedTokens,
+          hardwareClass: account.hardwareClass,
+          linkedTenantUserId: account.linkedTenantUserId,
           tier: account.tier,
           epochsSettled: account.epochsSettled,
           resourceValuationUsd: usdValue.totalUsd,
           tokenFloorPriceUsd: premiumEngine.treasury.foxyTokenFloorPriceUsd,
           treasuryBackingPoolUsd: premiumEngine.treasury.donorBackingPoolUsd,
+          networkTotalBurned: ledger.networkTotalBurned,
           recentPayouts: account.recentPayouts.slice(0, 3)
         },
-        pendingCommands: pendingForThis.map(d => ({
-          type: 'DEPLOY_WORKLOAD',
-          deploymentId: d.id,
-          subdomain: d.subdomain,
-          authToken: d.authToken,
-          config: d.config
-        }))
+        pendingCommands: [
+          ...pendingForThis.map(d => ({
+            type: 'DEPLOY_WORKLOAD',
+            deploymentId: d.id,
+            subdomain: d.subdomain,
+            authToken: d.authToken,
+            config: d.config
+          })),
+          ...queuedQuant.map(task => ({
+            type: 'EXECUTE_QUANT_TASK',
+            task
+          }))
+        ]
       });
     });
     return;
@@ -261,6 +291,8 @@ const server = http.createServer((req, res) => {
       symbol: TOKENOMICS_CONFIG.TOKEN_SYMBOL,
       currentEpoch: ledger.currentEpoch,
       networkTotalMinted: ledger.networkTotalMinted,
+      networkTotalBurned: ledger.networkTotalBurned,
+      totalComputeUnitsProcessed: ledger.totalComputeUnitsProcessed,
       config: TOKENOMICS_CONFIG,
       leaderboard: ledger.getLeaderboard()
     });
@@ -321,18 +353,50 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 8. Purchase Premium Service (Subdomain, dVPN Enterprise, Pro Tunnel)
+  // 8. Purchase Premium Service (Subdomain, dVPN Enterprise, Pro Tunnel, Foxy Finance SaaS)
   if (req.method === 'POST' && pathname === '/api/premium/subscribe') {
-    readJson((err, data) => {
+    readJson(async (err, data) => {
       if (err || !data.planId) return sendJson(400, { error: 'planId is required' });
       try {
+        let burnReceipt = null;
+        if (String(data.paymentMethod || '').toUpperCase() === 'FOXY' && data.nodeId) {
+          const plan = PREMIUM_PLANS[data.planId];
+          if (!plan) throw new Error(`Plan no reconocido: ${data.planId}`);
+          const discountFactor = (100 - Math.max(0, Math.min(100, Number(data.discountPercent || 0)))) / 100;
+          const requiredFoxy = parseFloat((plan.priceFoxy * discountFactor).toFixed(4));
+          if (requiredFoxy > 0) {
+            burnReceipt = await ledger.burnTokensForService(
+              data.nodeId,
+              requiredFoxy,
+              `SUBSCRIBE_${data.planId}`
+            );
+            if (!burnReceipt.success) {
+              return sendJson(400, { error: burnReceipt.error });
+            }
+          }
+        }
+
         const subRecord = premiumEngine.subscribePlan(
           data.planId,
           data.subscriberAddress || '0xAnonymousDonorSubscriber',
-          data.paymentMethod || 'USD'
+          data.paymentMethod || 'USD',
+          data.discountPercent || 0
         );
-        console.log(`[Premium 💎] New Subscription: ${subRecord.planName} by ${subRecord.subscriber} (Revenue: $${subRecord.amountPaid} USD)`);
-        sendJson(201, { success: true, subscription: subRecord, treasury: premiumEngine.treasury });
+
+        if (subRecord.paymentMethod === 'USD') {
+          ledger.recordProtocolBuybackBurn(
+            subRecord.revenueDistribution.burnedUsd,
+            premiumEngine.treasury.foxyTokenFloorPriceUsd
+          );
+        }
+
+        console.log(`[Premium 💎] New Subscription: ${subRecord.planName} by ${subRecord.subscriber} (${subRecord.amountPaid} ${subRecord.paymentMethod})`);
+        sendJson(201, {
+          success: true,
+          subscription: subRecord,
+          burnReceipt,
+          treasury: premiumEngine.treasury
+        });
       } catch (e) {
         sendJson(400, { error: e.message });
       }
@@ -340,31 +404,317 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 9. Foxy Finance Institutional Workload Dispatch
+  // 9. Foxy Finance Institutional Workload Dispatch (Sovereign Black-Box + Cross-Node Consensus)
   if (req.method === 'POST' && pathname === '/api/foxy-finance/dispatch') {
     readJson((err, data) => {
       if (err) return sendJson(400, { error: 'Invalid JSON' });
-      const record = premiumEngine.recordFoxyFinanceCompute({
-        workloadName: data.workloadName,
-        computeUnits: data.computeUnits || 2,
-        billingUsd: data.billingUsd || 0.40,
-        timestamp: new Date().toISOString()
-      });
 
-      // Distribute activity to online nodes
+      const seed = Number(data.seed || data.jobMetrics?.seed || Math.floor(10000 + Math.random() * 900000));
+      const workloadType = String(data.workloadType || data.jobMetrics?.type || 'MONTE_CARLO_VAR').toUpperCase();
+      const taskId = data.taskId || `task-ff-${Date.now()}-${seed}`;
+
+      const taskSpec = {
+        taskId,
+        workloadName: data.workloadName || 'Foxy Finance: Simulación de Riesgo DeFi Monte Carlo',
+        type: workloadType,
+        seed,
+        parameters: data.parameters || {}
+      };
+
+      // Execute deterministic Sovereign Black-Box calculation on two independent instances for redundant consensus
+      const nodeRunA = executeSovereignQuantTask(taskSpec);
+      const nodeRunB = executeSovereignQuantTask(taskSpec);
+
+      // Calculate maximum numerical divergence (epsilon < 1e-6 required)
+      let maxDiff = 0;
+      const vecA = nodeRunA.vector || [];
+      const vecB = nodeRunB.vector || [];
+      for (let i = 0; i < vecA.length; i++) {
+        maxDiff = Math.max(maxDiff, Math.abs((vecA[i] || 0) - (vecB[i] || 0)));
+      }
+      const consensusVerified = maxDiff < 1e-6 && nodeRunA.resultHash === nodeRunB.resultHash;
+
+      const computeUnits = Number(data.computeUnits || nodeRunA.computeUnitsRequired || 2);
+      const billingUsd = data.billingUsd !== undefined
+        ? Number(data.billingUsd)
+        : parseFloat((computeUnits * premiumEngine.treasury.fccRateUsd).toFixed(2));
+
+      // Select up to 2 online donor nodes to credit and dispatch
       const onlineNodes = Array.from(nodes.values()).filter(n => n.status === 'ONLINE');
-      if (onlineNodes.length > 0) {
-        const targetNode = onlineNodes[Math.floor(Math.random() * onlineNodes.length)];
+      const selectedNodes = onlineNodes.slice(0, 2);
+      const verifiedByNodes = selectedNodes.map(n => n.id);
+
+      for (const targetNode of selectedNodes) {
         ledger.recordActivity(targetNode.id, {
           uptimeDeltaSeconds: 15,
-          bytesDelta: (data.computeUnits || 2) * 256 * 1024,
+          bytesDelta: computeUnits * 256 * 1024,
+          computeUnitsDelta: computeUnits,
           specs: targetNode.specs,
           walletAddress: targetNode.walletAddress
         });
+
+        const q = pendingQuantTasksByNode.get(targetNode.id) || [];
+        q.push(taskSpec);
+        pendingQuantTasksByNode.set(targetNode.id, q);
       }
 
-      console.log(`[Foxy Finance 📈] Cómputo institucional procesado: ${record.workloadName} ($${record.revenueUsd} USD)`);
-      sendJson(200, { success: true, record, treasury: premiumEngine.treasury });
+      const record = premiumEngine.recordFoxyFinanceCompute({
+        workloadName: taskSpec.workloadName,
+        workloadType: nodeRunA.type,
+        computeUnits,
+        billingUsd,
+        verifiedByNodes,
+        consensusEpsilon: maxDiff,
+        jobMetrics: nodeRunA,
+        timestamp: new Date().toISOString()
+      });
+
+      // Record protocol buyback & burn (15% of compute revenue)
+      const burnedFromVault = ledger.recordProtocolBuybackBurn(
+        record.burnedUsd,
+        premiumEngine.treasury.foxyTokenFloorPriceUsd
+      );
+
+      quantTasks.set(taskId, {
+        taskId,
+        seed,
+        type: nodeRunA.type,
+        referenceOutput: nodeRunA,
+        consensusVerified,
+        consensusEpsilon: maxDiff,
+        assignedNodes: verifiedByNodes,
+        submissions: [],
+        createdAt: new Date().toISOString()
+      });
+
+      console.log(
+        `[Foxy Finance 📈] Cómputo procesado: ${record.workloadName} | ${computeUnits} FCC ($${record.revenueUsd} USD) | Quema: ${burnedFromVault} $FOXY`
+      );
+      sendJson(200, {
+        success: true,
+        taskId,
+        consensusVerified,
+        consensusEpsilon: maxDiff,
+        quantOutput: nodeRunA,
+        record,
+        treasury: premiumEngine.treasury
+      });
+    });
+    return;
+  }
+
+  // 9b. Foxy Finance Daemon Proof-of-Contribution Result Submission
+  if (req.method === 'POST' && pathname === '/api/foxy-finance/submit-result') {
+    readJson((err, data) => {
+      if (err || !data.taskId || !data.nodeId) {
+        return sendJson(400, { error: 'taskId and nodeId are required' });
+      }
+      const taskRecord = quantTasks.get(data.taskId);
+      const output = data.output || {};
+
+      let epsilon = 0;
+      let validProof = true;
+      if (taskRecord?.referenceOutput) {
+        const refVec = taskRecord.referenceOutput.vector || [];
+        const subVec = output.vector || [];
+        for (let i = 0; i < refVec.length; i++) {
+          epsilon = Math.max(epsilon, Math.abs((refVec[i] || 0) - (subVec[i] || 0)));
+        }
+        validProof = epsilon < 1e-6 && output.resultHash === taskRecord.referenceOutput.resultHash;
+      }
+
+      if (!validProof) {
+        return sendJson(400, {
+          success: false,
+          error: `Cross-validation failed: epsilon ${epsilon} exceeds threshold 1e-6`
+        });
+      }
+
+      const node = nodes.get(data.nodeId);
+      ledger.recordActivity(data.nodeId, {
+        computeUnitsDelta: 1,
+        specs: node?.specs || {},
+        walletAddress: data.walletAddress || node?.walletAddress
+      });
+
+      if (taskRecord) {
+        taskRecord.submissions.push({
+          nodeId: data.nodeId,
+          resultHash: output.resultHash,
+          epsilon,
+          verifiedAt: new Date().toISOString()
+        });
+      }
+
+      sendJson(200, {
+        success: true,
+        taskId: data.taskId,
+        nodeId: data.nodeId,
+        validProof: true,
+        epsilon,
+        resultHash: output.resultHash
+      });
+    });
+    return;
+  }
+
+  // 9c. Foxy Finance Anti-IDOR Tenant Account Linking (Hardware Contribution -> SaaS Discount)
+  if (req.method === 'POST' && pathname === '/api/foxy-finance/link-account') {
+    readJson((err, data) => {
+      if (err || !data.nodeId || !data.tenantUserId) {
+        return sendJson(400, { error: 'nodeId and tenantUserId are required' });
+      }
+      try {
+        const registeredNode = nodes.get(data.nodeId);
+        const mergedSpecs = { ...(registeredNode?.specs || {}), ...(data.specs || {}) };
+        const walletAddress = data.walletAddress || registeredNode?.walletAddress;
+
+        const binding = ledger.bindTenantUser(
+          data.nodeId,
+          data.tenantUserId,
+          walletAddress,
+          mergedSpecs
+        );
+
+        const benefitToken = issueFoxyFinanceBenefitToken({
+          userId: binding.tenantUserId,
+          nodeId: binding.nodeId,
+          walletAddress: binding.walletAddress,
+          hardwareClass: binding.hardwareClass,
+          discountPercent: binding.discountPercent,
+          freeProQuant: binding.freeProQuant
+        });
+
+        console.log(
+          `[Foxy Finance 🔗] Tenant '${binding.tenantUserId}' vinculado a nodo '${binding.nodeId}' (${binding.hardwareClass} -> ${binding.discountPercent}% Dto.)`
+        );
+
+        sendJson(200, {
+          success: true,
+          binding,
+          benefitToken,
+          hardwareMatrix: TOKENOMICS_CONFIG.FOXY_FINANCE_HARDWARE_MATRIX
+        });
+      } catch (e) {
+        const statusCode = e.message.includes('Anti-IDOR') ? 403 : 400;
+        sendJson(statusCode, { success: false, error: e.message });
+      }
+    });
+    return;
+  }
+
+  // 9d. Foxy Finance Benefit Verification Endpoint (Consumed by Foxy Finance Python Backend)
+  if (req.method === 'GET' && pathname.startsWith('/api/foxy-finance/verify-benefit/')) {
+    const tenantUserId = decodeURIComponent(pathname.replace('/api/foxy-finance/verify-benefit/', '')).trim();
+    const providedToken = url.searchParams.get('token');
+
+    if (providedToken) {
+      const check = verifyFoxyFinanceBenefitToken(providedToken, tenantUserId);
+      if (!check.valid) {
+        return sendJson(403, { valid: false, error: check.error });
+      }
+    }
+
+    const binding = ledger.getTenantBinding(tenantUserId);
+    if (!binding) {
+      return sendJson(404, {
+        valid: false,
+        tenantUserId,
+        discountPercent: 0,
+        freeProQuant: false,
+        error: 'No donor node linked to this Foxy Finance tenant account'
+      });
+    }
+
+    const node = nodes.get(binding.nodeId);
+    const isNodeOnline = !node || node.status === 'ONLINE';
+    const effectiveDiscount = isNodeOnline ? binding.discountPercent : 0;
+    const effectiveFreeProQuant = isNodeOnline ? binding.freeProQuant : false;
+
+    const benefitToken = issueFoxyFinanceBenefitToken({
+      userId: binding.tenantUserId,
+      nodeId: binding.nodeId,
+      walletAddress: binding.walletAddress,
+      hardwareClass: binding.hardwareClass,
+      discountPercent: effectiveDiscount,
+      freeProQuant: effectiveFreeProQuant
+    });
+
+    sendJson(200, {
+      valid: true,
+      tenantUserId: binding.tenantUserId,
+      nodeId: binding.nodeId,
+      walletAddress: binding.walletAddress,
+      nodeOnline: isNodeOnline,
+      hardwareClass: binding.hardwareClass,
+      hardwareLabel: binding.hardwareLabel,
+      discountPercent: effectiveDiscount,
+      freeProQuant: effectiveFreeProQuant,
+      benefitToken
+    });
+    return;
+  }
+
+  // 9e. Pay Foxy Finance Subscription or Compute Block with $FOXY Token (20% Discount + Deflationary Burn)
+  if (req.method === 'POST' && pathname === '/api/foxy-finance/pay-with-foxy') {
+    readJson(async (err, data) => {
+      if (err || !data.nodeId) {
+        return sendJson(400, { error: 'nodeId is required' });
+      }
+      try {
+        const planId = data.planId || 'FOXY_FINANCE_TRADER_PRO';
+        const plan = PREMIUM_PLANS[planId];
+        if (!plan) {
+          return sendJson(400, { error: `Unknown Foxy Finance plan: ${planId}` });
+        }
+
+        // Check if tenant has a hardware discount bound to this node
+        const account = ledger.getAccount(data.nodeId);
+        if (data.tenantUserId && account.linkedTenantUserId && account.linkedTenantUserId !== String(data.tenantUserId).trim()) {
+          return sendJson(403, {
+            error: `Anti-IDOR Violation: Node '${data.nodeId}' belongs to another tenant`
+          });
+        }
+
+        const hwDiscount = data.applyHardwareDiscount
+          ? (TOKENOMICS_CONFIG.FOXY_FINANCE_HARDWARE_MATRIX[account.hardwareClass]?.discountPercent || 0)
+          : 0;
+        const discountFactor = (100 - hwDiscount) / 100;
+        const foxyToBurn = data.amountFoxy !== undefined
+          ? Number(data.amountFoxy)
+          : parseFloat((plan.priceFoxy * discountFactor).toFixed(4));
+
+        let burnReceipt = null;
+        if (foxyToBurn > 0) {
+          burnReceipt = await ledger.burnTokensForService(
+            data.nodeId,
+            foxyToBurn,
+            `FOXY_FINANCE_${planId}`
+          );
+          if (!burnReceipt.success) {
+            return sendJson(400, { success: false, error: burnReceipt.error });
+          }
+        }
+
+        const subscription = premiumEngine.subscribePlan(
+          planId,
+          account.walletAddress,
+          'FOXY',
+          hwDiscount
+        );
+
+        sendJson(200, {
+          success: true,
+          planId,
+          foxyBurned: foxyToBurn,
+          hardwareDiscountAppliedPercent: hwDiscount,
+          burnReceipt,
+          subscription,
+          treasury: premiumEngine.treasury
+        });
+      } catch (e) {
+        sendJson(400, { success: false, error: e.message });
+      }
     });
     return;
   }
@@ -375,6 +725,10 @@ const server = http.createServer((req, res) => {
       ecosystem: 'Foxy Finance DeFi Ecosystem',
       recentWorkloads: premiumEngine.foxyFinanceWorkloads,
       totalJobsProcessed: premiumEngine.foxyFinanceWorkloads.length,
+      totalComputeUnitsProcessed: ledger.totalComputeUnitsProcessed,
+      networkTotalMinted: ledger.networkTotalMinted,
+      networkTotalBurned: ledger.networkTotalBurned,
+      hardwareBenefitMatrix: TOKENOMICS_CONFIG.FOXY_FINANCE_HARDWARE_MATRIX,
       treasuryBacking: premiumEngine.treasury
     });
     return;
