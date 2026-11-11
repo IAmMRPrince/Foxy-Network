@@ -1,91 +1,97 @@
+// ==============================================================================
+// Foxy Network - Security primitives
+//   1. Secret storage (never committed, never hardcoded)
+//   2. Signed capability tokens (JWT HS256) for subdomains and node identity
+//   3. HMAC request signing for service-to-service calls (Foxy Finance <-> Network)
+//   4. Ed25519 node identities
+// ==============================================================================
+
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SECRET_FILE = path.resolve(__dirname, '..', '..', '..', '.foxy-network-secret');
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-// -------------------------------------------------------------
-// 1. Shared Network Authority Secret
-// -------------------------------------------------------------
-export function getNetworkSecret() {
-  if (process.env.FOXY_NETWORK_SECRET) {
-    return process.env.FOXY_NETWORK_SECRET;
-  }
+/** Directory for local runtime state and secrets. Ignored by git. */
+export function getStateDir() {
+  const dir = process.env.FOXY_STATE_DIR || path.join(REPO_ROOT, '.foxy');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
 
+/**
+ * Loads a secret from the environment, or from a 0600 file in the state dir.
+ * If neither exists a random one is generated and persisted.
+ */
+export function loadOrCreateSecret(name, { envVar = null, bytes = 32 } = {}) {
+  if (envVar && process.env[envVar]) return process.env[envVar].trim();
+
+  const file = path.join(getStateDir(), name);
   try {
-    if (fs.existsSync(SECRET_FILE)) {
-      return fs.readFileSync(SECRET_FILE, 'utf-8').trim();
-    }
+    const existing = fs.readFileSync(file, 'utf-8').trim();
+    if (existing) return existing;
   } catch {
-    // Ignore error
+    // Not created yet
   }
 
-  // Generate deterministic secret for local network cluster if none exists
-  const generated = crypto.randomBytes(32).toString('hex');
+  const generated = crypto.randomBytes(bytes).toString('hex');
   try {
-    fs.writeFileSync(SECRET_FILE, generated, 'utf-8');
-  } catch {
-    // Ignore write failure if read-only
+    // 'wx' fails if another process created it first; then we read theirs.
+    fs.writeFileSync(file, generated, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch (err) {
+    if (err.code === 'EEXIST') return fs.readFileSync(file, 'utf-8').trim();
+    throw new Error(`No se pudo guardar el secreto '${name}' en ${file}: ${err.message}`);
   }
-  return generated;
 }
 
 // -------------------------------------------------------------
-// 2. High-Performance Base64Url Helpers
+// 1. Network authority secret (controller + gateway only)
+// -------------------------------------------------------------
+// Donor daemons and VPN clients must NOT hold this secret: they receive
+// tokens signed by the controller instead.
+export function getNetworkSecret() {
+  return loadOrCreateSecret('network-secret', { envVar: 'FOXY_NETWORK_SECRET' });
+}
+
+// -------------------------------------------------------------
+// 2. Base64Url helpers
 // -------------------------------------------------------------
 function base64urlEncode(data) {
   const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
-  return buf.toString('base64')
-    .replace(/=/g, '')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
+  return buf.toString('base64url');
 }
 
 function base64urlDecode(str) {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) {
-    base64 += '=';
-  }
-  return Buffer.from(base64, 'base64').toString('utf-8');
+  return Buffer.from(str, 'base64url').toString('utf-8');
+}
+
+/** Constant-time string comparison. */
+export function safeEqual(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 // -------------------------------------------------------------
-// 3. Cryptographic Capability Tokens (JWT HS256)
+// 3. Signed tokens (JWT HS256)
 // -------------------------------------------------------------
-/**
- * Issues a signed capability token granting a node the right to bind a subdomain.
- */
-export function issueSubdomainToken({ nodeId, subdomain, expiresInSeconds = 86400, secret }) {
+export const SCOPE_TUNNEL = 'foxy:tunnel:bind';
+export const SCOPE_NODE = 'foxy:node';
+
+function signToken(payload, secret) {
   const signingKey = secret || getNetworkSecret();
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const now = Math.floor(Date.now() / 1000);
-
-  const payload = {
-    sub: subdomain.toLowerCase(),
-    nodeId,
-    iat: now,
-    exp: now + expiresInSeconds,
-    scope: 'foxy:tunnel:bind'
-  };
-
-  const encodedHeader = base64urlEncode(JSON.stringify(header));
+  const encodedHeader = base64urlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const encodedPayload = base64urlEncode(JSON.stringify(payload));
   const dataToSign = `${encodedHeader}.${encodedPayload}`;
-
-  const signature = crypto.createHmac('sha256', signingKey)
-    .update(dataToSign)
-    .digest();
-
-  const encodedSignature = base64urlEncode(signature);
-  return `${dataToSign}.${encodedSignature}`;
+  const signature = crypto.createHmac('sha256', signingKey).update(dataToSign).digest();
+  return `${dataToSign}.${base64urlEncode(signature)}`;
 }
 
-/**
- * Validates a capability token presented by a node when requesting a tunnel.
- */
-export function verifySubdomainToken(token, expectedSubdomain = null, secret = null) {
+function verifyToken(token, expectedScope, secret) {
   if (!token || typeof token !== 'string') {
     return { valid: false, error: 'Token missing or malformed' };
   }
@@ -97,41 +103,120 @@ export function verifySubdomainToken(token, expectedSubdomain = null, secret = n
 
   const [encodedHeader, encodedPayload, encodedSignature] = parts;
   const signingKey = secret || getNetworkSecret();
-
-  // Verify HMAC signature
   const expectedSig = base64urlEncode(
-    crypto.createHmac('sha256', signingKey)
-      .update(`${encodedHeader}.${encodedPayload}`)
-      .digest()
+    crypto.createHmac('sha256', signingKey).update(`${encodedHeader}.${encodedPayload}`).digest()
   );
 
-  if (encodedSignature !== expectedSig) {
-    return { valid: false, error: 'Invalid cryptographic signature - Token forgery detected' };
+  if (!safeEqual(encodedSignature, expectedSig)) {
+    return { valid: false, error: 'Invalid cryptographic signature' };
   }
 
+  let payload;
   try {
-    const payload = JSON.parse(base64urlDecode(encodedPayload));
-    const now = Math.floor(Date.now() / 1000);
-
-    if (payload.exp && payload.exp < now) {
-      return { valid: false, error: 'Token has expired' };
-    }
-
-    if (expectedSubdomain && payload.sub !== expectedSubdomain.toLowerCase()) {
-      return {
-        valid: false,
-        error: `Token is for subdomain '${payload.sub}', but node requested '${expectedSubdomain}'`
-      };
-    }
-
-    return { valid: true, payload };
+    payload = JSON.parse(base64urlDecode(encodedPayload));
   } catch (err) {
     return { valid: false, error: 'Failed to parse token payload: ' + err.message };
   }
+
+  if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+    return { valid: false, error: 'Token has expired' };
+  }
+  if (payload.scope !== expectedScope) {
+    return { valid: false, error: `Token scope '${payload.scope}' is not '${expectedScope}'` };
+  }
+  return { valid: true, payload };
+}
+
+/** Capability token granting a node the right to bind a subdomain on the gateway. */
+export function issueSubdomainToken({ nodeId, subdomain, expiresInSeconds = 86400, secret }) {
+  const now = Math.floor(Date.now() / 1000);
+  return signToken({
+    sub: subdomain.toLowerCase(),
+    nodeId,
+    iat: now,
+    exp: now + expiresInSeconds,
+    scope: SCOPE_TUNNEL
+  }, secret);
+}
+
+export function verifySubdomainToken(token, expectedSubdomain = null, secret = null) {
+  const result = verifyToken(token, SCOPE_TUNNEL, secret);
+  if (!result.valid) return result;
+
+  if (expectedSubdomain && result.payload.sub !== expectedSubdomain.toLowerCase()) {
+    return {
+      valid: false,
+      error: `Token is for subdomain '${result.payload.sub}', but node requested '${expectedSubdomain}'`
+    };
+  }
+  return result;
+}
+
+/** Identity token proving that the bearer is the donor node `nodeId`. */
+export function issueNodeToken({ nodeId, expiresInSeconds = 365 * 86400, secret }) {
+  const now = Math.floor(Date.now() / 1000);
+  return signToken({ sub: nodeId, iat: now, exp: now + expiresInSeconds, scope: SCOPE_NODE }, secret);
+}
+
+export function verifyNodeToken(token, expectedNodeId = null, secret = null) {
+  const result = verifyToken(token, SCOPE_NODE, secret);
+  if (!result.valid) return result;
+  if (expectedNodeId && result.payload.sub !== expectedNodeId) {
+    return { valid: false, error: 'Token belongs to a different node' };
+  }
+  return result;
 }
 
 // -------------------------------------------------------------
-// 4. Ed25519 Asymmetric Node Identity
+// 4. HMAC request signing (partner / service-to-service API)
+// -------------------------------------------------------------
+// Signature = HMAC-SHA256(secret, `${timestamp}.${METHOD}.${path}.${sha256(body)}`)
+// Sent as headers:
+//   X-Foxy-Key-Id, X-Foxy-Timestamp (unix seconds), X-Foxy-Signature (hex)
+export const SIGNATURE_MAX_SKEW_SECONDS = 300;
+
+export function computeRequestSignature({ secret, timestamp, method, path: reqPath, body = '' }) {
+  const bodyHash = crypto.createHash('sha256').update(body || '').digest('hex');
+  const canonical = `${timestamp}.${String(method).toUpperCase()}.${reqPath}.${bodyHash}`;
+  return crypto.createHmac('sha256', secret).update(canonical).digest('hex');
+}
+
+export function signRequestHeaders({ keyId, secret, method, path: reqPath, body = '', timestamp = null }) {
+  const ts = String(timestamp ?? Math.floor(Date.now() / 1000));
+  return {
+    'X-Foxy-Key-Id': keyId,
+    'X-Foxy-Timestamp': ts,
+    'X-Foxy-Signature': computeRequestSignature({ secret, timestamp: ts, method, path: reqPath, body })
+  };
+}
+
+export function verifyRequestSignature({ headers, secret, expectedKeyId, method, path: reqPath, body = '', now = null }) {
+  const keyId = headers['x-foxy-key-id'];
+  const timestamp = headers['x-foxy-timestamp'];
+  const signature = headers['x-foxy-signature'];
+
+  if (!keyId || !timestamp || !signature) {
+    return { valid: false, error: 'Missing X-Foxy-Key-Id, X-Foxy-Timestamp or X-Foxy-Signature header' };
+  }
+  if (!safeEqual(keyId, expectedKeyId)) {
+    return { valid: false, error: 'Unknown key id' };
+  }
+
+  const ts = Number(timestamp);
+  const current = now ?? Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(ts) || Math.abs(current - ts) > SIGNATURE_MAX_SKEW_SECONDS) {
+    return { valid: false, error: 'Timestamp outside the allowed window' };
+  }
+
+  const expected = computeRequestSignature({ secret, timestamp, method, path: reqPath, body });
+  if (!safeEqual(signature, expected)) {
+    return { valid: false, error: 'Invalid signature' };
+  }
+  return { valid: true };
+}
+
+// -------------------------------------------------------------
+// 5. Ed25519 node identity
 // -------------------------------------------------------------
 export function createNodeKeypair() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
@@ -142,142 +227,15 @@ export function createNodeKeypair() {
 }
 
 export function signData(privateKeyPem, data) {
-  const signer = crypto.createSign(null);
-  signer.update(typeof data === 'string' ? data : JSON.stringify(data));
-  return signer.sign(privateKeyPem).toString('base64');
+  const payload = Buffer.from(typeof data === 'string' ? data : JSON.stringify(data));
+  return crypto.sign(null, payload, privateKeyPem).toString('base64');
 }
 
 export function verifyData(publicKeyPem, data, signatureBase64) {
   try {
-    const verifier = crypto.createVerify(null);
-    verifier.update(typeof data === 'string' ? data : JSON.stringify(data));
-    return verifier.verify(publicKeyPem, Buffer.from(signatureBase64, 'base64'));
+    const payload = Buffer.from(typeof data === 'string' ? data : JSON.stringify(data));
+    return crypto.verify(null, payload, publicKeyPem, Buffer.from(signatureBase64, 'base64'));
   } catch {
     return false;
-  }
-}
-
-// -------------------------------------------------------------
-// 5. Foxy Finance Benefit & Anti-IDOR Tokens (TenantContext Bridge)
-// -------------------------------------------------------------
-export function computeAntiIdorHash(userId, nodeId, walletAddress = '') {
-  return crypto
-    .createHash('sha256')
-    .update(`${String(userId)}:${String(nodeId)}:${String(walletAddress || '').toLowerCase()}`)
-    .digest('hex');
-}
-
-/**
- * Issues a signed benefit token certifying that a Foxy Finance tenant (userId)
- * owns an active donor node (nodeId) and qualifies for a hardware-based SaaS discount.
- */
-export function issueFoxyFinanceBenefitToken({
-  userId,
-  nodeId,
-  walletAddress = '',
-  hardwareClass = 'DESKTOP_PC',
-  discountPercent = 70,
-  freeProQuant = false,
-  expiresInSeconds = 3600,
-  secret = null
-}) {
-  if (!userId || !nodeId) {
-    throw new Error('userId and nodeId are required to issue a Foxy Finance benefit token');
-  }
-
-  const signingKey = secret || getNetworkSecret();
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const now = Math.floor(Date.now() / 1000);
-  const cleanUserId = String(userId).trim();
-  const cleanNodeId = String(nodeId).trim();
-  const cleanWallet = String(walletAddress || '').trim();
-
-  const payload = {
-    sub: 'foxy-finance:benefit',
-    tenantUserId: cleanUserId,
-    nodeId: cleanNodeId,
-    walletAddress: cleanWallet,
-    hardwareClass,
-    discountPercent: Number(discountPercent),
-    freeProQuant: Boolean(freeProQuant),
-    antiIdorHash: computeAntiIdorHash(cleanUserId, cleanNodeId, cleanWallet),
-    iat: now,
-    exp: now + expiresInSeconds,
-    scope: 'foxy:finance:discount'
-  };
-
-  const encodedHeader = base64urlEncode(JSON.stringify(header));
-  const encodedPayload = base64urlEncode(JSON.stringify(payload));
-  const dataToSign = `${encodedHeader}.${encodedPayload}`;
-
-  const signature = crypto
-    .createHmac('sha256', signingKey)
-    .update(dataToSign)
-    .digest();
-
-  return `${dataToSign}.${base64urlEncode(signature)}`;
-}
-
-/**
- * Validates a Foxy Finance benefit token and enforces strict Anti-IDOR tenant isolation.
- */
-export function verifyFoxyFinanceBenefitToken(token, expectedUserId = null, secret = null) {
-  if (!token || typeof token !== 'string') {
-    return { valid: false, error: 'Benefit token missing or malformed' };
-  }
-
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    return { valid: false, error: 'Invalid JWT format' };
-  }
-
-  const [encodedHeader, encodedPayload, encodedSignature] = parts;
-  const signingKey = secret || getNetworkSecret();
-
-  const expectedSig = base64urlEncode(
-    crypto
-      .createHmac('sha256', signingKey)
-      .update(`${encodedHeader}.${encodedPayload}`)
-      .digest()
-  );
-
-  if (encodedSignature !== expectedSig) {
-    return { valid: false, error: 'Invalid cryptographic signature - Benefit token forgery detected' };
-  }
-
-  try {
-    const payload = JSON.parse(base64urlDecode(encodedPayload));
-    const now = Math.floor(Date.now() / 1000);
-
-    if (payload.exp && payload.exp < now) {
-      return { valid: false, error: 'Benefit token has expired' };
-    }
-
-    if (payload.scope !== 'foxy:finance:discount') {
-      return { valid: false, error: `Invalid token scope: ${payload.scope}` };
-    }
-
-    const expectedAntiIdor = computeAntiIdorHash(
-      payload.tenantUserId,
-      payload.nodeId,
-      payload.walletAddress
-    );
-
-    if (payload.antiIdorHash !== expectedAntiIdor) {
-      return { valid: false, error: 'Anti-IDOR integrity hash mismatch' };
-    }
-
-    if (expectedUserId !== null && expectedUserId !== undefined) {
-      if (String(payload.tenantUserId) !== String(expectedUserId).trim()) {
-        return {
-          valid: false,
-          error: `Anti-IDOR Violation: token belongs to tenant '${payload.tenantUserId}', cannot be used by '${expectedUserId}'`
-        };
-      }
-    }
-
-    return { valid: true, payload };
-  } catch (err) {
-    return { valid: false, error: 'Failed to parse benefit token payload: ' + err.message };
   }
 }

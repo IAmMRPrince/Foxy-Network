@@ -10,12 +10,12 @@ import crypto from 'node:crypto';
 import tls from 'node:tls';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..', '..', '..');
-const SSL_DIR = path.resolve(ROOT_DIR, '.foxy', 'ssl');
+const SSL_DIR = path.resolve(process.env.FOXY_STATE_DIR || path.join(ROOT_DIR, '.foxy'), 'ssl');
 const CONFIG_PATH = path.resolve(ROOT_DIR, 'foxy.config.json');
 
 export const DEFAULT_FOX_DOMAINS = {
@@ -222,7 +222,13 @@ function buildSelfSignedX509Pem(domains) {
     asn1Oid([0x55, 0x1d, 0x11]),
     asn1Tag(0x04, sanValue)
   );
-  const extensions = asn1Tag(0xa3, asn1Seq(sanExt));
+  // basicConstraints (2.5.29.19), critical, empty sequence = not a CA
+  const bcExt = asn1Seq(
+    asn1Oid([0x55, 0x1d, 0x13]),
+    Buffer.from([0x01, 0x01, 0xff]),
+    asn1Tag(0x04, asn1Seq())
+  );
+  const extensions = asn1Tag(0xa3, asn1Seq(bcExt, sanExt));
 
   const serial = crypto.randomBytes(8);
   serial[0] &= 0x7f;
@@ -274,7 +280,7 @@ export function ensureFoxSslCredentials() {
     }
   }
 
-  fs.mkdirSync(SSL_DIR, { recursive: true });
+  fs.mkdirSync(SSL_DIR, { recursive: true, mode: 0o700 });
 
   const sanDomains = [
     'www.foxyfianance.fox',
@@ -304,21 +310,25 @@ export function ensureFoxSslCredentials() {
       'CN = www.foxyfianance.fox',
       '[v3_req]',
       'subjectAltName = @alt_names',
+      // A server certificate only: it must never be able to sign other certificates
+      'basicConstraints = critical, CA:FALSE',
+      'keyUsage = critical, digitalSignature, keyEncipherment',
+      'extendedKeyUsage = serverAuth',
       '[alt_names]',
       ...sanDomains.map((d, idx) => `DNS.${idx + 1} = ${d}`)
     ].join('\n');
     fs.writeFileSync(extFile, cnfContent, 'utf-8');
 
-    execSync(
-      `openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -config "${extFile}"`,
-      { stdio: 'ignore' }
-    );
+    execFileSync('openssl', ['req', '-x509', '-nodes', '-days', '825', '-newkey', 'rsa:2048',
+      '-keyout', keyPath, '-out', certPath, '-config', extFile], { stdio: 'ignore' });
   } catch {
     // Pure Node.js fallback
     const creds = buildSelfSignedX509Pem(sanDomains);
-    fs.writeFileSync(keyPath, creds.key, 'utf-8');
+    fs.writeFileSync(keyPath, creds.key, { encoding: 'utf-8', mode: 0o600 });
     fs.writeFileSync(certPath, creds.cert, 'utf-8');
   }
+
+  try { fs.chmodSync(keyPath, 0o600); } catch { /* not supported on this platform */ }
 
   return {
     key: fs.readFileSync(keyPath, 'utf-8'),

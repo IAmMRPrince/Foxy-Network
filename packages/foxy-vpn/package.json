@@ -1,6 +1,6 @@
 {
   "name": "foxy-vpn",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Foxy Network - Encrypted Decentralized VPN (dVPN) Service with Zero-Knowledge Egress and Tokenomics",
   "main": "src/index.js",

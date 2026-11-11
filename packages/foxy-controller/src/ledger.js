@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { ethers } from 'ethers';
+import { loadOrCreateSecret } from '../../foxy-security/src/index.js';
 
 // Tokenomics parameters
 export const TOKENOMICS_CONFIG = {
@@ -7,126 +8,129 @@ export const TOKENOMICS_CONFIG = {
   UPTIME_RATE_PER_MINUTE: 0.25,        // 0.25 FOXY per minute online
   BANDWIDTH_RATE_PER_MB: 1.50,         // 1.50 FOXY per MB transferred
   DVPN_BANDWIDTH_RATE_PER_MB: 2.00,    // 2.00 FOXY per MB of encrypted dVPN traffic routed
-  COMPUTE_UNIT_RATE_FOXY: 3.50,        // 3.50 FOXY per Foxy Compute Credit (FCC) unit verified for Foxy Finance
+  COMPUTE_RATE_PER_UNIT: 3.50,         // 3.50 FOXY per verified Foxy Compute Credit (FCC)
   EPOCH_DURATION_MS: 30000,            // 30 second settlement epochs
   TIER_MULTIPLIERS: {
     STANDARD: 1.0,
     HIGH_PERFORMANCE: 1.5,
     ULTRA_COMPUTE: 2.0
-  },
-  FOXY_FINANCE_HARDWARE_MATRIX: {
-    ESP32_IOT: {
-      discountPercent: 15,
-      freeProQuant: false,
-      minCores: 1,
-      minRamMb: 0,
-      label: 'ESP32 / Microcontrolador IoT'
-    },
-    ANDROID_EDGE: {
-      discountPercent: 25,
-      freeProQuant: false,
-      minCores: 2,
-      minRamMb: 1024,
-      label: 'Celular Android (Termux / Edge)'
-    },
-    SBC_RASPBERRY: {
-      discountPercent: 50,
-      freeProQuant: false,
-      minCores: 4,
-      minRamMb: 2048,
-      label: 'Raspberry Pi 3/4/5 / SBC'
-    },
-    DESKTOP_PC: {
-      discountPercent: 70,
-      freeProQuant: false,
-      minCores: 4,
-      minRamMb: 8192,
-      label: 'Computador Personal / Laptop'
-    },
-    VPS_BAREMETAL: {
-      discountPercent: 100,
-      freeProQuant: true,
-      minCores: 8,
-      minRamMb: 16384,
-      label: 'Servidor VPS / Bare Metal (Pro Quant GRATIS)'
-    }
   }
 };
 
+// Traffic counters are reported by the node itself. Until the gateway meters
+// them independently, cap what a single heartbeat can claim (≈100 Mbit/s).
+export const MAX_REPORTED_BYTES_PER_SECOND = 12.5 * 1024 * 1024;
+
+const HOUR_MS = 3600 * 1000;
+const UPTIME_HISTORY_HOURS = 7 * 24;
+
+/**
+ * Loads the oracle signing key. It is an independent secret: it is never
+ * derived from the network secret or from anything published in the repo.
+ */
+export function loadOracleWallet() {
+  let key = loadOrCreateSecret('oracle-key', { envVar: 'FOXY_ORACLE_PRIVATE_KEY' });
+  if (!key.startsWith('0x')) key = '0x' + key;
+  return new ethers.Wallet(key);
+}
+
+function round4(n) {
+  return parseFloat(n.toFixed(4));
+}
+
 export class FoxyLedger {
-  constructor(sharedSecret = 'foxy-depin-cluster-shared-secret-v1') {
+  /**
+   * @param {object} options
+   * @param {ethers.Wallet} [options.oracleWallet]
+   * @param {object} [options.snapshot] previously persisted state
+   * @param {() => void} [options.onChange] called whenever persistent state changes
+   * @param {boolean} [options.autoSettle] run epoch settlement on a timer
+   */
+  constructor({ oracleWallet = null, snapshot = null, onChange = () => {}, autoSettle = true } = {}) {
     this.accounts = new Map(); // nodeId -> account
-    this.tenantBindings = new Map(); // tenantUserId -> { tenantUserId, nodeId, walletAddress, linkedAt }
+    this.claimNonces = new Map(); // recipient address (lowercase) -> next on-chain nonce
     this.networkTotalMinted = 0;
     this.networkTotalBurned = 0;
     this.totalComputeUnitsProcessed = 0;
     this.currentEpoch = 1;
+    this.onChange = onChange;
+    this.oracleWallet = oracleWallet || loadOracleWallet();
 
-    // Deterministic Controller Oracle Key (used to sign on-chain reward claims)
-    const seed = crypto.createHash('sha256').update(`${sharedSecret}-oracle-master-key-v1`).digest('hex');
-    this.oracleWallet = new ethers.Wallet('0x' + seed);
+    if (snapshot) this.restore(snapshot);
+
     console.log(`[Tokenomics 🦊] Controller Oracle Web3 Address: ${this.oracleWallet.address}`);
 
-    // Start automated epoch settlement
-    this.epochTimer = setInterval(() => this.settleEpoch(), TOKENOMICS_CONFIG.EPOCH_DURATION_MS);
+    if (autoSettle) {
+      this.epochTimer = setInterval(() => this.settleEpoch(), TOKENOMICS_CONFIG.EPOCH_DURATION_MS);
+      this.epochTimer.unref();
+    }
   }
 
-  classifyHardwareForFoxyFinance(specs = {}) {
-    const explicitType = String(specs.deviceType || specs.hardwareClass || '').toUpperCase();
-    const matrix = TOKENOMICS_CONFIG.FOXY_FINANCE_HARDWARE_MATRIX;
+  serialize() {
+    return {
+      currentEpoch: this.currentEpoch,
+      networkTotalMinted: this.networkTotalMinted,
+      networkTotalBurned: this.networkTotalBurned,
+      totalComputeUnitsProcessed: this.totalComputeUnitsProcessed,
+      accounts: Array.from(this.accounts.values()),
+      claimNonces: Object.fromEntries(this.claimNonces)
+    };
+  }
 
-    if (matrix[explicitType]) {
-      return { hardwareClass: explicitType, ...matrix[explicitType] };
+  restore(snapshot) {
+    this.currentEpoch = snapshot.currentEpoch || 1;
+    this.networkTotalMinted = snapshot.networkTotalMinted || 0;
+    this.networkTotalBurned = snapshot.networkTotalBurned || 0;
+    this.totalComputeUnitsProcessed = snapshot.totalComputeUnitsProcessed || 0;
+    for (const acc of snapshot.accounts || []) {
+      if (acc && acc.nodeId) this.accounts.set(acc.nodeId, { ...this.newAccount(acc.nodeId), ...acc });
     }
+    for (const [addr, nonce] of Object.entries(snapshot.claimNonces || {})) {
+      this.claimNonces.set(addr, nonce);
+    }
+  }
 
-    const cores = Number(specs.cores || 2);
-    const ramMb = Number(specs.totalRamMb || 2048);
-    const arch = String(specs.arch || '').toLowerCase();
-    const platform = String(specs.platform || '').toLowerCase();
+  newAccount(nodeId) {
+    return {
+      nodeId,
+      walletAddress: null,
+      balance: 0,
+      pendingUptimeSeconds: 0,
+      pendingBytesServed: 0,
+      pendingVpnBytes: 0,
+      pendingComputeUnits: 0,
+      lifetimeEarnings: 0,
+      lifetimeComputeUnits: 0,
+      burnedTokens: 0,
+      tier: 'STANDARD',
+      epochsSettled: 0,
+      firstSeenAt: Date.now(),
+      uptimeByHour: {}, // hour index -> seconds online in that hour
+      recentPayouts: []
+    };
+  }
 
-    if (explicitType.includes('ESP32') || explicitType.includes('IOT') || ramMb <= 512) {
-      return { hardwareClass: 'ESP32_IOT', ...matrix.ESP32_IOT };
-    }
-    if (platform === 'android' || explicitType.includes('ANDROID') || explicitType.includes('TERMUX')) {
-      return { hardwareClass: 'ANDROID_EDGE', ...matrix.ANDROID_EDGE };
-    }
-    if ((arch.includes('arm') && ramMb <= 8192 && platform === 'linux') || explicitType.includes('RASPBERRY') || explicitType.includes('SBC')) {
-      return { hardwareClass: 'SBC_RASPBERRY', ...matrix.SBC_RASPBERRY };
-    }
-    if (cores >= 8 && ramMb >= 16384) {
-      return { hardwareClass: 'VPS_BAREMETAL', ...matrix.VPS_BAREMETAL };
-    }
-    return { hardwareClass: 'DESKTOP_PC', ...matrix.DESKTOP_PC };
+  hasAccount(nodeId) {
+    return this.accounts.has(nodeId);
   }
 
   getAccount(nodeId, walletAddress = null) {
     if (!this.accounts.has(nodeId)) {
-      this.accounts.set(nodeId, {
-        nodeId,
-        walletAddress: walletAddress || `0x${crypto.createHash('sha256').update(nodeId).digest('hex').slice(0, 40)}`,
-        balance: 0,
-        pendingUptimeSeconds: 0,
-        pendingBytesServed: 0,
-        pendingVpnBytes: 0,
-        pendingComputeUnits: 0,
-        lifetimeEarnings: 0,
-        lifetimeComputeUnits: 0,
-        burnedTokens: 0,
-        linkedTenantUserId: null,
-        hardwareClass: 'DESKTOP_PC',
-        tier: 'STANDARD',
-        epochsSettled: 0,
-        nonce: 0,
-        recentPayouts: []
-      });
-    } else if (walletAddress && walletAddress.startsWith('0x')) {
-      const acc = this.accounts.get(nodeId);
-      acc.walletAddress = walletAddress;
+      this.accounts.set(nodeId, this.newAccount(nodeId));
+      this.onChange();
     }
-    return this.accounts.get(nodeId);
+    const acc = this.accounts.get(nodeId);
+    if (walletAddress && ethers.isAddress(walletAddress)) {
+      const normalized = ethers.getAddress(walletAddress);
+      if (acc.walletAddress !== normalized) {
+        acc.walletAddress = normalized;
+        this.onChange();
+      }
+    }
+    return acc;
   }
 
-  recordActivity(nodeId, { uptimeDeltaSeconds = 0, bytesDelta = 0, vpnBytesDelta = 0, computeUnitsDelta = 0, specs = {}, walletAddress = null }) {
+  recordActivity(nodeId, { uptimeDeltaSeconds = 0, bytesDelta = 0, vpnBytesDelta = 0, specs = {}, walletAddress = null }) {
     const account = this.getAccount(nodeId, walletAddress);
 
     // Determine performance tier based on donated specs
@@ -138,15 +142,66 @@ export class FoxyLedger {
       account.tier = 'STANDARD';
     }
 
-    if (specs && Object.keys(specs).length > 0) {
-      const hw = this.classifyHardwareForFoxyFinance(specs);
-      account.hardwareClass = hw.hardwareClass;
-    }
+    const uptime = Math.max(0, Number(uptimeDeltaSeconds) || 0);
+    const byteCap = Math.max(1, uptime) * MAX_REPORTED_BYTES_PER_SECOND;
+    account.pendingUptimeSeconds += uptime;
+    account.pendingBytesServed += Math.min(Math.max(0, Number(bytesDelta) || 0), byteCap);
+    account.pendingVpnBytes += Math.min(Math.max(0, Number(vpnBytesDelta) || 0), byteCap);
 
-    account.pendingUptimeSeconds += uptimeDeltaSeconds;
-    account.pendingBytesServed += bytesDelta;
-    account.pendingVpnBytes += vpnBytesDelta;
-    account.pendingComputeUnits += computeUnitsDelta;
+    if (uptime > 0) {
+      const hour = Math.floor(Date.now() / HOUR_MS);
+      account.uptimeByHour[hour] = Math.min(3600, (account.uptimeByHour[hour] || 0) + uptime);
+      for (const key of Object.keys(account.uptimeByHour)) {
+        if (Number(key) < hour - UPTIME_HISTORY_HOURS) delete account.uptimeByHour[key];
+      }
+    }
+    this.onChange();
+  }
+
+  /** Credits compute units for a partner job whose result was accepted. */
+  recordCompute(nodeId, computeUnits) {
+    const account = this.getAccount(nodeId);
+    const units = Math.max(0, Number(computeUnits) || 0);
+    account.pendingComputeUnits += units;
+    account.lifetimeComputeUnits += units;
+    this.totalComputeUnitsProcessed += units;
+    this.onChange();
+  }
+
+  /**
+   * Spends (burns) part of a node's unclaimed balance to pay for a service.
+   * This is the off-chain ledger balance: tokens already minted on-chain are
+   * paid through FoxyTreasuryVault.paySubscriptionWithFoxy() instead.
+   */
+  burnForService(nodeId, amountFoxy, reason = 'SERVICE') {
+    const account = this.accounts.get(nodeId);
+    const amount = round4(Number(amountFoxy));
+    if (!account || !(amount > 0)) return { success: false, error: 'Importe inválido' };
+    if (account.balance < amount) {
+      return { success: false, error: `Saldo insuficiente: ${account.balance} $FOXY disponibles, ${amount} requeridos` };
+    }
+    account.balance = round4(account.balance - amount);
+    account.burnedTokens = round4((account.burnedTokens || 0) + amount);
+    this.networkTotalBurned = round4(this.networkTotalBurned + amount);
+    this.onChange();
+    return { success: true, amount, reason, balance: account.balance };
+  }
+
+  /**
+   * Fraction of time the node was online over the last `hours` hours
+   * (or since it was first seen, if that is more recent).
+   */
+  getUptimeRatio(nodeId, hours = 24) {
+    const account = this.accounts.get(nodeId);
+    if (!account) return 0;
+    const now = Date.now();
+    const currentHour = Math.floor(now / HOUR_MS);
+    let onlineSeconds = 0;
+    for (const [key, seconds] of Object.entries(account.uptimeByHour)) {
+      if (Number(key) > currentHour - hours) onlineSeconds += seconds;
+    }
+    const windowSeconds = Math.min(hours * 3600, Math.max(60, (now - account.firstSeenAt) / 1000));
+    return Math.min(1, onlineSeconds / windowSeconds);
   }
 
   settleEpoch() {
@@ -154,216 +209,128 @@ export class FoxyLedger {
     const now = new Date().toISOString();
 
     for (const [nodeId, account] of this.accounts.entries()) {
-      if (
-        account.pendingUptimeSeconds <= 0 &&
-        account.pendingBytesServed <= 0 &&
-        account.pendingVpnBytes <= 0 &&
-        account.pendingComputeUnits <= 0
-      ) {
+      if (account.pendingUptimeSeconds <= 0 && account.pendingBytesServed <= 0 &&
+          account.pendingVpnBytes <= 0 && account.pendingComputeUnits <= 0) {
         continue;
       }
 
       const multiplier = TOKENOMICS_CONFIG.TIER_MULTIPLIERS[account.tier] || 1.0;
 
-      // 1. Calculate Uptime Reward
       const uptimeMinutes = account.pendingUptimeSeconds / 60;
       const uptimeReward = uptimeMinutes * TOKENOMICS_CONFIG.UPTIME_RATE_PER_MINUTE * multiplier;
 
-      // 2. Calculate Standard Cloud Bandwidth Reward
       const megabytes = account.pendingBytesServed / (1024 * 1024);
       const bandwidthReward = megabytes * TOKENOMICS_CONFIG.BANDWIDTH_RATE_PER_MB * multiplier;
 
-      // 3. Calculate Encrypted dVPN Routing Reward
       const vpnMegabytes = account.pendingVpnBytes / (1024 * 1024);
       const vpnReward = vpnMegabytes * TOKENOMICS_CONFIG.DVPN_BANDWIDTH_RATE_PER_MB * multiplier;
 
-      // 4. Calculate Foxy Finance Verified Compute (FCC) Reward
-      const computeUnits = account.pendingComputeUnits || 0;
-      const computeReward = computeUnits * TOKENOMICS_CONFIG.COMPUTE_UNIT_RATE_FOXY * multiplier;
+      // Compute units are already sized by the work done: no hardware multiplier.
+      const computeReward = account.pendingComputeUnits * TOKENOMICS_CONFIG.COMPUTE_RATE_PER_UNIT;
 
-      const totalEpochReward = parseFloat((uptimeReward + bandwidthReward + vpnReward + computeReward).toFixed(4));
+      const totalEpochReward = round4(uptimeReward + bandwidthReward + vpnReward + computeReward);
 
       if (totalEpochReward > 0) {
-        account.balance = parseFloat((account.balance + totalEpochReward).toFixed(4));
-        account.lifetimeEarnings = parseFloat((account.lifetimeEarnings + totalEpochReward).toFixed(4));
-        account.lifetimeComputeUnits += computeUnits;
-        this.totalComputeUnitsProcessed += computeUnits;
-        this.networkTotalMinted = parseFloat((this.networkTotalMinted + totalEpochReward).toFixed(4));
+        account.balance = round4(account.balance + totalEpochReward);
+        account.lifetimeEarnings = round4(account.lifetimeEarnings + totalEpochReward);
+        this.networkTotalMinted = round4(this.networkTotalMinted + totalEpochReward);
         account.epochsSettled++;
 
-        const payoutReceipt = {
+        account.recentPayouts.unshift({
           epoch: this.currentEpoch,
           timestamp: now,
           reward: totalEpochReward,
           breakdown: {
             uptimeSeconds: account.pendingUptimeSeconds,
-            uptimeReward: parseFloat(uptimeReward.toFixed(4)),
+            uptimeReward: round4(uptimeReward),
             bytesServed: account.pendingBytesServed,
-            bandwidthReward: parseFloat(bandwidthReward.toFixed(4)),
+            bandwidthReward: round4(bandwidthReward),
             vpnBytesServed: account.pendingVpnBytes,
-            vpnReward: parseFloat(vpnReward.toFixed(4)),
-            computeUnits,
-            computeReward: parseFloat(computeReward.toFixed(4)),
+            vpnReward: round4(vpnReward),
+            computeUnits: account.pendingComputeUnits,
+            computeReward: round4(computeReward),
             tier: account.tier,
             multiplier
           },
           receiptHash: crypto.createHash('sha256').update(`${nodeId}-${this.currentEpoch}-${totalEpochReward}-${now}`).digest('hex').slice(0, 16)
-        };
-
-        account.recentPayouts.unshift(payoutReceipt);
+        });
         if (account.recentPayouts.length > 20) account.recentPayouts.pop();
-
-        console.log(`[Tokenomics 💰] Epoch ${this.currentEpoch} Settled for ${nodeId} (${account.walletAddress.slice(0, 8)}...): +${totalEpochReward} ${TOKENOMICS_CONFIG.TOKEN_SYMBOL} (Balance: ${account.balance})`);
       }
 
-      // Reset pending
       account.pendingUptimeSeconds = 0;
       account.pendingBytesServed = 0;
       account.pendingVpnBytes = 0;
       account.pendingComputeUnits = 0;
     }
+    this.onChange();
   }
 
-  bindTenantUser(nodeId, tenantUserId, walletAddress = null, specs = {}) {
-    if (!nodeId || !tenantUserId) {
-      throw new Error('nodeId and tenantUserId are required');
-    }
-    const cleanUserId = String(tenantUserId).trim();
-    const account = this.getAccount(nodeId, walletAddress);
-
-    // Anti-IDOR check 1: Node cannot be hijacked by another tenant
-    if (account.linkedTenantUserId && account.linkedTenantUserId !== cleanUserId) {
-      throw new Error(
-        `Anti-IDOR Violation: Node '${nodeId}' is already bound to tenant '${account.linkedTenantUserId}'`
-      );
-    }
-
-    // Anti-IDOR check 2: If tenant is already bound to a different node owned by another wallet, verify ownership
-    const existingBinding = this.tenantBindings.get(cleanUserId);
-    if (existingBinding && existingBinding.nodeId !== nodeId) {
-      const existingAcc = this.accounts.get(existingBinding.nodeId);
-      if (
-        walletAddress &&
-        existingAcc?.walletAddress &&
-        existingAcc.walletAddress.toLowerCase() !== walletAddress.toLowerCase()
-      ) {
-        throw new Error(
-          `Anti-IDOR Violation: Tenant '${cleanUserId}' is already bound to another wallet`
-        );
-      }
-    }
-
-    const hwProfile = this.classifyHardwareForFoxyFinance(specs);
-    account.linkedTenantUserId = cleanUserId;
-    account.hardwareClass = hwProfile.hardwareClass;
-
-    const bindingRecord = {
-      tenantUserId: cleanUserId,
-      nodeId,
-      walletAddress: account.walletAddress,
-      hardwareClass: hwProfile.hardwareClass,
-      discountPercent: hwProfile.discountPercent,
-      freeProQuant: hwProfile.freeProQuant,
-      hardwareLabel: hwProfile.label,
-      linkedAt: new Date().toISOString()
-    };
-
-    this.tenantBindings.set(cleanUserId, bindingRecord);
-    return bindingRecord;
-  }
-
-  getTenantBinding(tenantUserId) {
-    if (!tenantUserId) return null;
-    return this.tenantBindings.get(String(tenantUserId).trim()) || null;
-  }
-
-  async burnTokensForService(nodeId, amountFoxy, reason = 'FOXY_FINANCE_SUBSCRIPTION') {
-    const account = this.getAccount(nodeId);
-    const burnAmount = parseFloat(Number(amountFoxy).toFixed(4));
-    if (isNaN(burnAmount) || burnAmount <= 0) {
-      return { success: false, error: 'Burn amount must be greater than 0' };
-    }
-    if (account.balance < burnAmount) {
-      return {
-        success: false,
-        error: `Insufficient $FOXY balance: required ${burnAmount}, available ${account.balance}`
-      };
-    }
-
-    account.balance = parseFloat((account.balance - burnAmount).toFixed(4));
-    account.burnedTokens = parseFloat(((account.burnedTokens || 0) + burnAmount).toFixed(4));
-    this.networkTotalBurned = parseFloat((this.networkTotalBurned + burnAmount).toFixed(4));
-
-    const burnHash = ethers.solidityPackedKeccak256(
-      ['string', 'address', 'uint256', 'string', 'uint256'],
-      [nodeId, account.walletAddress, ethers.parseEther(burnAmount.toFixed(4)), reason, this.currentEpoch]
-    );
-    const signature = await this.oracleWallet.signMessage(ethers.getBytes(burnHash));
-
-    return {
-      success: true,
-      nodeId,
-      walletAddress: account.walletAddress,
-      burnedAmount: burnAmount,
-      remainingBalance: account.balance,
-      networkTotalBurned: this.networkTotalBurned,
-      reason,
-      epoch: this.currentEpoch,
-      burnTxHash: '0x' + crypto.randomBytes(32).toString('hex'),
-      oracleSignature: signature,
-      timestamp: new Date().toISOString()
-    };
-  }
-
-  recordProtocolBuybackBurn(usdAmount, tokenFloorPriceUsd = 0.12) {
-    const safePrice = Math.max(0.01, Number(tokenFloorPriceUsd || 0.12));
-    const burnedFoxy = parseFloat((Number(usdAmount || 0) / safePrice).toFixed(4));
-    if (burnedFoxy > 0) {
-      this.networkTotalBurned = parseFloat((this.networkTotalBurned + burnedFoxy).toFixed(4));
-    }
-    return burnedFoxy;
-  }
-
-  async claimRewards(nodeId, targetAddress = null, chainId = 84532, contractAddress = '0x1111111111111111111111111111111111111111') {
-    const account = this.getAccount(nodeId);
-    if (account.balance <= 0) {
+  /**
+   * Signs a reward voucher that the recipient can redeem on-chain with
+   * FoxyToken.claimContributionReward(amount, epoch, signature).
+   *
+   * Nothing is transferred here: the tokens are minted only when the recipient
+   * submits the voucher to the contract. `chainId` and `contractAddress` must
+   * match the deployed FoxyToken or the contract will reject the signature.
+   */
+  async claimRewards(nodeId, targetAddress = null, { chainId = null, contractAddress = null } = {}) {
+    const account = this.accounts.get(nodeId);
+    if (!account || account.balance <= 0) {
       return { success: false, error: 'No claimable balance available' };
     }
 
-    const claimedAmount = account.balance;
-    const recipient = targetAddress && targetAddress.startsWith('0x') ? targetAddress : account.walletAddress;
-    account.balance = 0;
-    account.nonce++;
+    const candidate = targetAddress || account.walletAddress;
+    if (!candidate || !ethers.isAddress(candidate)) {
+      return { success: false, error: 'A valid EVM payout address is required' };
+    }
+    const recipient = ethers.getAddress(candidate);
 
-    // Calculate 18 decimals Wei amount
+    const resolvedChainId = Number(chainId ?? process.env.FOXY_CHAIN_ID ?? 84532);
+    const configuredContract = contractAddress || process.env.FOXY_TOKEN_ADDRESS || null;
+    const onChain = !!configuredContract && ethers.isAddress(configuredContract);
+    const resolvedContract = onChain ? ethers.getAddress(configuredContract) : ethers.ZeroAddress;
+
+    const claimedAmount = account.balance;
     const amountWei = ethers.parseEther(claimedAmount.toFixed(4));
 
-    // Sign message for FoxyToken.sol claimContributionReward(amount, epoch, signature)
+    // The contract tracks one nonce per recipient (msg.sender), so we do too.
+    const nonceKey = recipient.toLowerCase();
+    const nonce = this.claimNonces.get(nonceKey) || 0;
+
     const messageHash = ethers.solidityPackedKeccak256(
       ['address', 'uint256', 'uint256', 'uint256', 'uint256', 'address'],
-      [recipient, amountWei, this.currentEpoch, account.nonce - 1, chainId, contractAddress]
+      [recipient, amountWei, this.currentEpoch, nonce, resolvedChainId, resolvedContract]
     );
-
     const signature = await this.oracleWallet.signMessage(ethers.getBytes(messageHash));
 
-    const txReceipt = {
-      txHash: '0x' + crypto.randomBytes(32).toString('hex'),
-      amount: claimedAmount,
-      amountWei: amountWei.toString(),
-      symbol: TOKENOMICS_CONFIG.TOKEN_SYMBOL,
-      from: this.oracleWallet.address,
-      to: recipient,
-      epoch: this.currentEpoch,
-      nonce: account.nonce - 1,
-      signature,
-      timestamp: new Date().toISOString(),
-      network: 'Foxy DePIN Multi-Chain Settler (Base / Polygon / Arbitrum)'
-    };
+    // Only mutate state once the signature exists.
+    account.balance = 0;
+    // A simulated voucher never reaches a contract, so it must not consume an
+    // on-chain nonce.
+    if (onChain) this.claimNonces.set(nonceKey, nonce + 1);
+    this.onChange();
 
     return {
       success: true,
       amount: claimedAmount,
-      receipt: txReceipt
+      receipt: {
+        claimId: crypto.randomUUID(),
+        settlement: onChain ? 'ONCHAIN_VOUCHER' : 'SIMULATED',
+        note: onChain
+          ? 'Voucher firmado. Envíalo a FoxyToken.claimContributionReward() para acuñar los tokens.'
+          : 'Modo simulación: no hay contrato FoxyToken configurado (FOXY_TOKEN_ADDRESS). No se transfirió ningún token.',
+        amount: claimedAmount,
+        amountWei: amountWei.toString(),
+        symbol: TOKENOMICS_CONFIG.TOKEN_SYMBOL,
+        oracle: this.oracleWallet.address,
+        to: recipient,
+        epoch: this.currentEpoch,
+        nonce,
+        chainId: resolvedChainId,
+        contractAddress: onChain ? resolvedContract : null,
+        signature,
+        timestamp: new Date().toISOString()
+      }
     };
   }
 
