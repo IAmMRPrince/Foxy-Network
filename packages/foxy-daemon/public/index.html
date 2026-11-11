@@ -208,6 +208,7 @@
     th, td { text-align: left; padding: 0.8rem 0.6rem; border-bottom: 1px solid var(--card-border); }
     th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
 
+    .type-foxy-finance { background: rgba(255, 107, 53, 0.2); color: #ff6b35; border: 1px solid rgba(255, 107, 53, 0.4); }
     .type-pill {
       font-size: 0.75rem;
       padding: 3px 8px;
@@ -655,7 +656,7 @@
             const directUrl = 'http://localhost:8080/t/' + encodeURIComponent(w.subdomain) + '/';
             return `
               <tr>
-                <td><strong>${esc(w.name)}</strong></td>
+                <td><strong>${esc(w.name)}</strong>${w.foxDomain ? `<div style="margin-top:3px;font-size:0.75rem;color:var(--cyan);font-family:'JetBrains Mono',monospace">${esc(w.foxDomain)}</div>` : ''}</td>
                 <td><span class="type-pill type-${esc(w.type)}">${esc(w.type)}</span></td>
                 <td><code>${esc(w.subdomain)}</code></td>
                 <td><code>:${esc(w.port)}</code></td>

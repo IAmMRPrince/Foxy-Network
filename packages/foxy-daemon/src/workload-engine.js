@@ -2,8 +2,10 @@ import { spawn, execSync, execFileSync } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKLOAD_TYPES = new Set(['static', 'docker', 'python', 'node']);
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 // registry/repo:tag or @sha256 digest. Never starts with '-', so it can't be read as a flag.
@@ -63,6 +65,82 @@ export class WorkloadEngine {
     };
     workload.logs.push(entry);
     if (workload.logs.length > 100) workload.logs.shift();
+  }
+
+  /**
+   * Publishes the operator's own Foxy Finance server through the tunnel.
+   * Only the daemon's startup code calls this (never the dashboard or the
+   * controller): it points at a local port and may launch a local program.
+   *
+   * If nothing answers on `port`, and `appDir` (or a sibling "FOXY FINANCE"
+   * folder) holds a FastAPI app, it is started with uvicorn.
+   */
+  async attachFoxyFinance({ port = 8000, appDir = null, subdomain = 'foxy-finance', foxDomain = null, quota = {} } = {}) {
+    const workload = {
+      id: 'foxy-finance-saas',
+      name: 'FOXY FINANCE SaaS',
+      type: 'foxy-finance',
+      subdomain,
+      foxDomain,
+      port,
+      status: 'STARTING',
+      startedAt: new Date().toISOString(),
+      logs: [],
+      process: null,
+      containerId: null,
+      quota
+    };
+    this.workloads.set(workload.id, workload);
+
+    const alreadyUp = await new Promise((resolve) => {
+      const req = http.get({ hostname: '127.0.0.1', port, path: '/', timeout: 1200 }, (res) => { res.resume(); resolve(true); });
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.on('error', () => resolve(false));
+    });
+
+    if (alreadyUp) {
+      this.appendLog(workload, `FOXY FINANCE detectado en 127.0.0.1:${port}.`);
+    } else {
+      const financeDir = this._resolveFoxyFinanceDir(appDir);
+      if (financeDir) {
+        const venvWin = path.join(financeDir, 'venv', 'Scripts', 'python.exe');
+        const venvUnix = path.join(financeDir, 'venv', 'bin', 'python');
+        const python = fs.existsSync(venvWin) ? venvWin
+          : fs.existsSync(venvUnix) ? venvUnix
+          : (process.platform === 'win32' ? 'python' : 'python3');
+
+        // Foxy Finance is the operator's own app and needs its own settings,
+        // but never the keys that sign for the whole network.
+        const env = { ...process.env, FASTAPI_PORT: `${port}`, PORT: `${port}` };
+        for (const key of ['FOXY_NETWORK_SECRET', 'FOXY_ADMIN_KEY', 'FOXY_ORACLE_PRIVATE_KEY', 'DEPLOYER_PRIVATE_KEY']) delete env[key];
+
+        this.appendLog(workload, `Iniciando FOXY FINANCE desde ${financeDir} en 127.0.0.1:${port}...`);
+        const child = spawn(python, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', `${port}`], { cwd: financeDir, env });
+        workload.process = child;
+        child.stdout.on('data', d => this.appendLog(workload, d.toString()));
+        child.stderr.on('data', d => this.appendLog(workload, d.toString()));
+        child.on('error', err => { this.appendLog(workload, `No se pudo iniciar FOXY FINANCE: ${err.message}`, true); workload.status = 'ERROR'; });
+        child.on('exit', code => { this.appendLog(workload, `Proceso FOXY FINANCE terminado (código ${code})`); workload.status = 'STOPPED'; });
+        await new Promise(r => setTimeout(r, 1500));
+      } else {
+        this.appendLog(workload, `Túnel preparado hacia 127.0.0.1:${port}; inicia FOXY FINANCE en ese puerto.`);
+      }
+    }
+
+    if (workload.status === 'STARTING') workload.status = 'RUNNING';
+    return workload;
+  }
+
+  _resolveFoxyFinanceDir(customAppDir) {
+    // The Foxy Finance project is expected next to this repository
+    const foxyRoot = path.resolve(MODULE_DIR, '..', '..', '..', '..');
+    const candidates = [
+      customAppDir,
+      path.join(foxyRoot, 'FOXY FINANCE'),
+      path.join(foxyRoot, 'FOXY FINAINCE'),
+      path.join(foxyRoot, 'foxy-finance')
+    ].filter(Boolean);
+    return candidates.find(dir => fs.existsSync(path.join(dir, 'main.py'))) || null;
   }
 
   /**
@@ -327,6 +405,7 @@ export class WorkloadEngine {
       name: w.name,
       type: w.type,
       subdomain: w.subdomain,
+      foxDomain: w.foxDomain || null,
       port: w.port,
       status: w.status,
       startedAt: w.startedAt,

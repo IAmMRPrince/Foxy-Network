@@ -66,11 +66,15 @@ async function main() {
     case 'link':
       await linkFoxyFinance();
       break;
-    case 'finance':
-      await handleFinanceCommand(args.slice(1));
-      break;
     case 'vpn':
       await handleVpnCommand(args.slice(1));
+      break;
+    case 'domains':
+    case 'domain':
+      await handleDomainsCommand(args.slice(1));
+      break;
+    case 'finance':
+      await handleFinanceCommand(args.slice(1));
       break;
     case 'token':
       await showTokenInfo();
@@ -369,6 +373,70 @@ async function showTokenInfo() {
 `);
 }
 
+async function handleDomainsCommand(subArgs) {
+  const action = subArgs[0] || 'list';
+  const { loadDomainMappings, ensureFoxSslCredentials } = await import('../../foxy-gateway/src/domains.js');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+
+  if (action === 'setup' || action === 'install') {
+    console.log('\n🌐 === CONFIGURANDO DOMINIOS .FOX Y CERTIFICADO SSL LOCAL ===\n');
+    const creds = ensureFoxSslCredentials();
+    console.log(`✅ Certificado SSL generado para *.fox en:\n   ${creds.certPath}`);
+
+    const hostsEntries = [
+      '127.0.0.1 www.foxyfianance.fox',
+      '127.0.0.1 foxyfianance.fox',
+      '127.0.0.1 www.foxyfinance.fox',
+      '127.0.0.1 foxyfinance.fox',
+      '127.0.0.1 www.foxynetwork.fox',
+      '127.0.0.1 foxynetwork.fox'
+    ];
+
+    const hostsPath = os.platform() === 'win32'
+      ? 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+      : '/etc/hosts';
+
+    try {
+      const currentHosts = fs.readFileSync(hostsPath, 'utf-8');
+      const missing = hostsEntries.filter(entry => !currentHosts.includes(entry.split(' ')[1]));
+      if (missing.length > 0) {
+        const block = `\n# --- Foxy Network Decentralized .fox Domains ---\n${missing.join('\n')}\n`;
+        fs.appendFileSync(hostsPath, block, 'utf-8');
+        console.log(`✅ Dominios .fox agregados exitosamente a ${hostsPath}`);
+      } else {
+        console.log(`✅ Todos los dominios .fox ya están registrados en ${hostsPath}`);
+      }
+    } catch (err) {
+      console.log(`⚠️ No se pudo escribir directamente en ${hostsPath} (requiere permisos de Administrador).`);
+      console.log(`   👉 Puedes usar inmediatamente los dominios sin permisos de administrador a través del proxy dVPN (127.0.0.1:1080)`);
+      console.log(`   👉 O ejecuta Configurar-Dominios-Fox.bat como Administrador para registrarlos a nivel de Windows.`);
+    }
+
+    if (os.platform() === 'win32') {
+      try {
+        execFileSync('certutil', ['-user', '-addstore', 'Root', creds.certPath], { stdio: 'ignore' });
+        console.log(`✅ Certificado SSL instalado en el almacén de confianza del usuario actual.`);
+      } catch {
+        // Ignore if user cancels prompt
+      }
+    }
+    console.log('');
+    return;
+  }
+
+  const mappings = loadDomainMappings();
+  console.log('\n🌐 === DOMINIOS DESCENTRALIZADOS .FOX ALOJADOS EN FOXY NETWORK ===\n');
+  for (const [domain, info] of Object.entries(mappings)) {
+    console.log(`  🦊 https://${domain.padEnd(24)} -> [${info.target}] (${info.name})`);
+  }
+  console.log(`\nPuertos del Gateway:`);
+  console.log(`  - HTTP:  http://www.foxynetwork.fox:8080  | http://www.foxyfianance.fox:8080`);
+  console.log(`  - HTTPS: https://www.foxynetwork.fox:8443 | https://www.foxyfianance.fox:8443`);
+  console.log(`  - Proxy dVPN (sin puerto en URL): https://www.foxyfianance.fox & http://www.foxynetwork.fox (vía 127.0.0.1:1080)\n`);
+}
+
 function showHelp() {
   console.log(`
 🦊 Foxy Network CLI — Herramienta de Gestión DePIN
@@ -387,6 +455,7 @@ Comandos disponibles:
                         Estado del enlace con Foxy Finance, pago con $FOXY y trabajos de prueba
   link                  Genera un código para vincular este nodo con tu cuenta de Foxy Finance
   vpn [status|connect]  Consulta o inicia el túnel cliente dVPN cifrado (127.0.0.1:1080)
+  domains [list|setup]  Lista o configura el hosting y DNS para www.foxyfianance.fox y www.foxynetwork.fox
   token                 Muestra detalles del token $FOXY, economía y smart contracts
   help                  Muestra este menú de ayuda
 `);

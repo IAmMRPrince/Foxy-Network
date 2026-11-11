@@ -5,6 +5,7 @@
 // ==============================================================================
 
 import http from 'node:http';
+import net from 'node:net';
 import { pathToFileURL } from 'node:url';
 import crypto from 'node:crypto';
 import { WebSocket } from 'ws';
@@ -13,11 +14,24 @@ import { CryptoTunnel } from './crypto-tunnel.js';
 const PROXY_PORT = parseInt(process.env.FOXY_VPN_LOCAL_PORT || '1080', 10);
 const GATEWAY_TUNNEL_URL = process.env.FOXY_GATEWAY_TUNNEL_URL || 'ws://127.0.0.1:8081';
 const CONNECT_TIMEOUT_MS = 15000;
+// .fox names are not real DNS: the proxy sends them straight to the Foxy gateway.
+const FOX_GATEWAY_HOST = process.env.FOXY_GATEWAY_INGRESS_HOST || '127.0.0.1';
+const GATEWAY_HTTP_PORT = parseInt(process.env.FOXY_GATEWAY_HTTP_PORT || '8080', 10);
+const GATEWAY_HTTPS_PORT = parseInt(process.env.FOXY_GATEWAY_HTTPS_PORT || '8443', 10) || 8443;
+
+function isFoxDomain(hostname) {
+  return typeof hostname === 'string' && hostname.toLowerCase().trim().endsWith('.fox');
+}
 
 export class FoxyVpnClient {
   constructor(options = {}) {
     this.port = options.port ?? PROXY_PORT;
     this.gatewayUrl = options.gatewayUrl || GATEWAY_TUNNEL_URL;
+    this.foxGateway = {
+      host: options.foxGatewayHost || FOX_GATEWAY_HOST,
+      httpPort: options.foxHttpPort || GATEWAY_HTTP_PORT,
+      httpsPort: options.foxHttpsPort || GATEWAY_HTTPS_PORT
+    };
     this.ws = null;
     this.server = null;
     this.stopped = false;
@@ -174,6 +188,24 @@ export class FoxyVpnClient {
         res.end('Foxy dVPN: URL de proxy inválida.');
         return;
       }
+      if (url.protocol === 'http:' && isFoxDomain(url.hostname)) {
+        const proxyReq = http.request({
+          hostname: this.foxGateway.host,
+          port: this.foxGateway.httpPort,
+          path: url.pathname + url.search,
+          method: req.method,
+          headers: { ...req.headers, host: url.hostname }
+        }, (proxyRes) => {
+          res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+          proxyRes.pipe(res);
+        });
+        proxyReq.on('error', (err) => {
+          res.writeHead(502);
+          res.end(`Foxy DNS (.fox): no se pudo conectar con el gateway (${err.message})`);
+        });
+        req.pipe(proxyReq);
+        return;
+      }
       if (url.protocol !== 'http:' || !this.isOnline()) {
         res.writeHead(502);
         res.end('Foxy dVPN: Red no disponible.');
@@ -204,6 +236,20 @@ export class FoxyVpnClient {
       const sep = req.url.lastIndexOf(':');
       const targetHost = sep > 0 ? req.url.slice(0, sep) : req.url;
       const targetPort = parseInt(sep > 0 ? req.url.slice(sep + 1) : '443', 10);
+
+      if (isFoxDomain(targetHost)) {
+        const { host, httpPort, httpsPort } = this.foxGateway;
+        const gwPort = (targetPort === 80 || targetPort === httpPort) ? httpPort : httpsPort;
+        const gwSocket = net.connect(gwPort, host, () => {
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\nProxy-Agent: Foxy-DNS-Gateway\r\n\r\n');
+          if (head && head.length > 0) gwSocket.write(head);
+          gwSocket.pipe(clientSocket);
+          clientSocket.pipe(gwSocket);
+        });
+        gwSocket.on('error', () => clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'));
+        clientSocket.on('error', () => gwSocket.destroy());
+        return;
+      }
 
       if (!this.isOnline()) {
         clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');

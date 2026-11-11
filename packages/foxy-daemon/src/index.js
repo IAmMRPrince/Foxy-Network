@@ -178,6 +178,22 @@ async function initializeBaseWorkload() {
   } catch (err) {
     addLog(`Error al inicializar carga base: ${err.message}`, 'error');
   }
+
+  // Operator's node only: publish the Foxy Finance SaaS under the .fox domains.
+  if (process.env.FOXY_HOST_FINANCE === '1') {
+    try {
+      const financePort = parseInt(process.env.FOXY_FINANCE_PORT || '8000', 10);
+      await engine.attachFoxyFinance({
+        port: financePort,
+        appDir: process.env.FOXY_FINANCE_DIR || null,
+        foxDomain: 'https://www.foxyfinance.fox',
+        quota: state.quota
+      });
+      addLog(`🌐 FOXY FINANCE publicado como [foxy-finance] (-> 127.0.0.1:${financePort})`, 'success');
+    } catch (err) {
+      addLog(`No se pudo publicar FOXY FINANCE: ${err.message}`, 'error');
+    }
+  }
 }
 
 // -------------------------------------------------------------

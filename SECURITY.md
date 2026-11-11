@@ -31,6 +31,8 @@ Los secretos se generan al azar en la carpeta `.foxy/` (ignorada por git) o se l
 - **dVPN sin autenticación del nodo de salida.** El intercambio de claves protege frente a un gateway que solo observa, no frente a uno que se interpone activamente. El nodo de salida ve a qué servidor va cada conexión.
 - **Trabajos con una sola réplica** confían en el nodo que los ejecuta. Usa `replicas: 2` o `3` para verificarlos.
 - **Cargas `docker`.** Ejecutan la imagen que indique el operador de la red, con límites de CPU, memoria y procesos, pero sin un aislamiento reforzado. Las cargas `python` y `node` solo sirven una página fija.
+- **Certificado `.fox` local.** `foxy domains setup` añade un certificado autofirmado al almacén de confianza del usuario en Windows. Es un certificado de servidor (no puede firmar otros), pero quien lea `.foxy/ssl/foxy-domains.key` puede suplantar los dominios `.fox` en ese equipo.
+- **Alojamiento de Foxy Finance** (`FOXY_HOST_FINANCE=1`): pensado solo para el nodo del operador. El primer nodo que registra `foxy-finance` se queda con ese subdominio.
 - **Estado en un archivo JSON** (`.foxy/controller-state.json`), válido para un solo controlador.
 - **Contratos sin auditar** y con funciones de propietario (cambiar oráculo, porcentajes, desembolsar reservas): quien tenga la clave del propietario controla los fondos de la bóveda.
 - El `PremiumEngine` del controlador es un modelo contable simulado; no representa fondos reales ni un precio de mercado.

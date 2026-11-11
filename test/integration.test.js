@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
+import https from 'node:https';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { FoxyNetworkClient } from '../packages/foxy-finance-workload/src/network-client.js';
 import { FoxyVpnClient } from '../packages/foxy-vpn/src/client.js';
@@ -33,7 +35,15 @@ async function waitFor(fn, { timeoutMs = 20000, intervalMs = 200, label = 'condi
 test('full stack', async (t) => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxy-it-'));
   const daemonCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'foxy-it-daemon-'));
-  const [gwHttp, gwWs, ctrl, daemonPort] = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
+  const [gwHttp, gwWs, ctrl, daemonPort, gwHttps] = await Promise.all([freePort(), freePort(), freePort(), freePort(), freePort()]);
+
+  // Stand-in for the Foxy Finance SaaS running on the operator's machine
+  const fakeFinance = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ app: 'fake-foxy-finance', path: req.url }));
+  });
+  await new Promise(r => fakeFinance.listen(0, '127.0.0.1', r));
+  t.after(() => fakeFinance.close());
 
   const env = {
     PATH: process.env.PATH,
@@ -44,6 +54,9 @@ test('full stack', async (t) => {
     FOXY_GATEWAY_HTTP_PORT: String(gwHttp),
     FOXY_GATEWAY_TUNNEL_PORT: String(gwWs),
     FOXY_GATEWAY_HOST: '127.0.0.1',
+    FOXY_GATEWAY_HTTPS_PORT: String(gwHttps),
+    FOXY_HOST_FINANCE: '1',
+    FOXY_FINANCE_PORT: String(fakeFinance.address().port),
     FOXY_GATEWAY_TUNNEL_URL: `ws://127.0.0.1:${gwWs}`,
     FOXY_CONTROLLER_PORT: String(ctrl),
     FOXY_CONTROLLER_HOST: '127.0.0.1',
@@ -233,6 +246,66 @@ test('full stack', async (t) => {
         assert.equal(await viaProxy('192.168.1.1:80'), 502);
         assert.equal(await viaProxy('169.254.169.254:80'), 502);
         assert.equal(await viaProxy('127.0.0.1:443'), 502);
+      } finally {
+        vpn.stop();
+      }
+    });
+
+    await t.test('.fox domains: Foxy Finance is served over HTTP, HTTPS and the local proxy', async () => {
+      const viaHost = (mod, port, host, extra = {}) => new Promise((resolve, reject) => {
+        const req = mod.request({ host: '127.0.0.1', port, path: '/api/health', headers: { Host: host }, agent: false, ...extra }, (res) => {
+          // Read the certificate now: the socket is released once the body ends
+          const cert = res.socket.getPeerCertificate ? res.socket.getPeerCertificate() : null;
+          let body = '';
+          res.on('data', d => body += d);
+          res.on('end', () => resolve({ status: res.statusCode, body, cert }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+
+      const plain = await waitFor(async () => {
+        const r = await viaHost(http, gwHttp, 'www.foxyfinance.fox');
+        return r.status === 200 ? r : null;
+      }, { label: 'foxy-finance tunnel' });
+      assert.deepEqual(JSON.parse(plain.body), { app: 'fake-foxy-finance', path: '/api/health' });
+      // The historical alias resolves to the same app
+      assert.equal((await viaHost(http, gwHttp, 'foxyfianance.fox')).status, 200);
+      // The portal domain shows the portal, not an app
+      assert.match((await viaHost(http, gwHttp, 'www.foxynetwork.fox')).body, /Dominios/);
+      // A dynamic app subdomain maps to its tunnel
+      assert.match((await viaHost(http, gwHttp, 'mi-app.foxynetwork.fox')).body, /Mi App/);
+
+      const secure = await viaHost(https, gwHttps, 'www.foxyfinance.fox', { servername: 'www.foxyfinance.fox', rejectUnauthorized: false });
+      assert.equal(secure.status, 200);
+      assert.ok(secure.cert.subjectaltname.includes('DNS:www.foxyfinance.fox'));
+      // The local certificate is a server certificate, not an authority
+      const x509 = new crypto.X509Certificate(secure.cert.raw);
+      assert.equal(x509.ca, false);
+      if (process.platform !== 'win32') {
+        assert.equal(fs.statSync(path.join(stateDir, 'ssl', 'foxy-domains.key')).mode & 0o077, 0);
+      }
+
+      const status = await (await fetch(`${gateway}/api/domains`)).json();
+      const ff = status.foxDomains.find(d => d.domain === 'www.foxyfinance.fox');
+      assert.equal(ff.online, true);
+      assert.equal(ff.target, 'foxy-finance');
+
+      // Through the local proxy, .fox names reach the gateway without DNS
+      const vpn = new FoxyVpnClient({ port: 0, gatewayUrl: `ws://127.0.0.1:${gwWs}`, foxHttpPort: gwHttp, foxHttpsPort: gwHttps });
+      await vpn.start();
+      try {
+        const proxied = await new Promise((resolve, reject) => {
+          const req = http.request({ host: '127.0.0.1', port: vpn.port, path: 'http://www.foxyfinance.fox/api/health', headers: { Host: 'www.foxyfinance.fox' } }, (res) => {
+            let body = '';
+            res.on('data', d => body += d);
+            res.on('end', () => resolve({ status: res.statusCode, body }));
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        assert.equal(proxied.status, 200);
+        assert.match(proxied.body, /fake-foxy-finance/);
       } finally {
         vpn.stop();
       }

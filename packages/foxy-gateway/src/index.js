@@ -1,10 +1,15 @@
 import http from 'node:http';
+import https from 'node:https';
 import { WebSocketServer } from 'ws';
 import { randomUUID } from 'node:crypto';
 import { verifySubdomainToken, verifyNodeToken } from '../../foxy-security/src/index.js';
+import { resolveFoxDomain, loadDomainMappings, ensureFoxSslCredentials } from './domains.js';
 
 const HTTP_PORT = parseInt(process.env.FOXY_GATEWAY_HTTP_PORT || '8080', 10);
 const TUNNEL_PORT = parseInt(process.env.FOXY_GATEWAY_TUNNEL_PORT || '8081', 10);
+// HTTPS ingress for the .fox domains. Set FOXY_GATEWAY_HTTPS_PORT=off to disable it.
+const HTTPS_PORT_RAW = process.env.FOXY_GATEWAY_HTTPS_PORT || '8443';
+const HTTPS_PORT = HTTPS_PORT_RAW === 'off' ? null : parseInt(HTTPS_PORT_RAW, 10);
 
 // Active tunnels: subdomain -> { ws, nodeId, connectedAt, specs, requestCount, bytesTransferred }
 const activeTunnels = new Map();
@@ -23,7 +28,8 @@ const TUNNEL_HOST = process.env.FOXY_GATEWAY_HOST || '0.0.0.0';
 const wss = new WebSocketServer({ port: TUNNEL_PORT, host: TUNNEL_HOST, maxPayload: 16 * 1024 * 1024 });
 
 wss.on('connection', (ws, req) => {
-  let boundSubdomain = null;
+  // One daemon connection can serve several subdomains
+  const registeredSubdomains = new Set();
   let boundNodeId = null;
 
   console.log(`[Gateway Tunnel] New incoming connection from ${req.socket.remoteAddress}`);
@@ -161,8 +167,8 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
-        boundSubdomain = cleanSubdomain;
-        boundNodeId = nodeId || `node-${randomUUID().slice(0, 8)}`;
+        registeredSubdomains.add(cleanSubdomain);
+        boundNodeId = nodeId || boundNodeId || `node-${randomUUID().slice(0, 8)}`;
         console.log(`[Gateway Security 🛡️] 🔒 Token criptográfico JWT verificado exitosamente para [${cleanSubdomain}] (Nodo: ${boundNodeId})`);
 
         activeTunnels.set(cleanSubdomain, {
@@ -180,6 +186,7 @@ wss.on('connection', (ws, req) => {
           type: 'TUNNEL_READY',
           subdomain: cleanSubdomain,
           gatewayHttpPort: HTTP_PORT,
+          gatewayHttpsPort: HTTPS_PORT,
           message: `Reverse tunnel established. Traffic for '${cleanSubdomain}' will route here.`
         }));
       }
@@ -196,7 +203,7 @@ wss.on('connection', (ws, req) => {
         clearTimeout(pending.timer);
         pendingRequests.delete(requestId);
 
-        const tunnel = activeTunnels.get(boundSubdomain);
+        const tunnel = activeTunnels.get(pending.subdomain);
         if (tunnel) {
           tunnel.requestCount++;
         }
@@ -224,9 +231,11 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    if (boundSubdomain && activeTunnels.get(boundSubdomain)?.ws === ws) {
-      activeTunnels.delete(boundSubdomain);
-      console.log(`[Gateway Tunnel] 🔌 Tunnel closed for [${boundSubdomain}] (Node: ${boundNodeId})`);
+    for (const sub of registeredSubdomains) {
+      if (activeTunnels.get(sub)?.ws === ws) {
+        activeTunnels.delete(sub);
+        console.log(`[Gateway Tunnel] 🔌 Tunnel closed for [${sub}] (Node: ${boundNodeId})`);
+      }
     }
     if (boundNodeId && activeVpnRelays.has(boundNodeId) && activeVpnRelays.get(boundNodeId).ws === ws) {
       activeVpnRelays.delete(boundNodeId);
@@ -269,14 +278,30 @@ function extractSubdomain(req) {
 function extractRawSubdomain(req) {
   // 1. Direct header
   if (req.headers['x-foxy-subdomain']) {
-    return req.headers['x-foxy-subdomain'].toLowerCase();
+    return req.headers['x-foxy-subdomain'];
   }
 
-  // 2. Host header: tenant.domain.com or tenant.localhost:8080
+  // 2. Explicit path prefix: /t/:subdomain/... or /app/:subdomain/...
+  //    (first, so links from the portal work under any hostname)
+  const match = req.url.match(/^\/(?:app|t)\/([a-zA-Z0-9_-]+)(\/.*)?$/);
+  if (match) {
+    req.originalUrl = req.url;
+    req.url = match[2] || '/';
+    return match[1];
+  }
+
   const host = (req.headers.host || '').split(':')[0].toLowerCase();
+
+  // 3. Decentralized .fox domains (www.foxyfinance.fox, <app>.foxynetwork.fox...)
+  const fox = resolveFoxDomain(host);
+  if (fox.matched) {
+    return fox.target === '__portal__' ? null : fox.target;
+  }
+
+  // 4. Host header: tenant.domain.com or tenant.localhost:8080
+  //    An IP address has no subdomain ("127.0.0.1" is not tenant "127").
+  const isIpHost = /^\d+(\.\d+){3}$/.test(host) || (req.headers.host || '').startsWith('[');
   const parts = host.split('.');
-  // An IP address has no subdomain ("127.0.0.1" is not tenant "127")
-  const isIpHost = /^\d+(\.\d+){3}$/.test(host) || host.startsWith('[');
   if (!isIpHost && parts.length >= 2) {
     const candidate = parts[0];
     if (candidate !== 'www' && candidate !== 'localhost' && candidate !== 'foxy') {
@@ -284,20 +309,10 @@ function extractRawSubdomain(req) {
     }
   }
 
-  // 3. Path prefix fallback for local development: /app/:subdomain/... or /t/:subdomain/...
-  const match = req.url.match(/^\/(?:app|t)\/([a-zA-Z0-9_-]+)(\/.*)?$/);
-  if (match) {
-    const subdomain = match[1].toLowerCase();
-    // Rewrite req.url to target path
-    req.originalUrl = req.url;
-    req.url = match[2] || '/';
-    return subdomain;
-  }
-
   return null;
 }
 
-const httpServer = http.createServer((req, res) => {
+function handleIngressRequest(req, res) {
   // CORS for open distributed access
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
@@ -310,7 +325,7 @@ const httpServer = http.createServer((req, res) => {
   }
 
   // Gateway status and API
-  if (req.url === '/__foxy/status' || req.url === '/api/tunnels') {
+  if (req.url === '/__foxy/status' || req.url === '/api/tunnels' || req.url === '/api/domains') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const tunnelsList = [];
     for (const [subdomain, data] of activeTunnels.entries()) {
@@ -321,13 +336,17 @@ const httpServer = http.createServer((req, res) => {
         specs: data.specs,
         requestCount: data.requestCount,
         bytesTransferred: data.bytesTransferred,
-        directUrl: `http://localhost:${HTTP_PORT}/t/${subdomain}/`
+        directUrl: `http://localhost:${HTTP_PORT}/t/${subdomain}/`,
+        foxDomainUrl: foxUrlFor(subdomain)
       });
     }
     res.end(JSON.stringify({
       status: 'online',
       activeTunnelsCount: activeTunnels.size,
-      tunnels: tunnelsList
+      tunnels: tunnelsList,
+      httpPort: HTTP_PORT,
+      httpsPort: HTTPS_PORT,
+      foxDomains: listFoxDomains()
     }, null, 2));
     return;
   }
@@ -381,7 +400,7 @@ const httpServer = http.createServer((req, res) => {
       `);
     }, 15000);
 
-    pendingRequests.set(requestId, { req, res, timer, tunnelWs: tunnel.ws });
+    pendingRequests.set(requestId, { req, res, timer, tunnelWs: tunnel.ws, subdomain });
 
     // Send payload to daemon
     tunnel.ws.send(JSON.stringify({
@@ -395,7 +414,25 @@ const httpServer = http.createServer((req, res) => {
       isBase64
     }));
   });
-});
+}
+
+/** Public URL of a tunnel under the .fox namespace. */
+function foxUrlFor(subdomain) {
+  const scheme = HTTPS_PORT ? 'https' : 'http';
+  const port = HTTPS_PORT ? (HTTPS_PORT === 443 ? '' : `:${HTTPS_PORT}`) : `:${HTTP_PORT}`;
+  const named = Object.entries(loadDomainMappings()).find(([, info]) => info.target === subdomain);
+  return `${scheme}://${named ? named[0] : `${subdomain}.foxynetwork.fox`}${port}`;
+}
+
+function listFoxDomains() {
+  return Object.entries(loadDomainMappings()).map(([domain, info]) => ({
+    domain,
+    url: foxUrlFor(info.target === '__portal__' ? '__portal__' : info.target).replace(/\/\/[^:/]+/, `//${domain}`),
+    target: info.target,
+    name: info.name,
+    online: info.target === '__portal__' || activeTunnels.has(info.target)
+  }));
+}
 
 function serveGatewayPortal(req, res) {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -482,6 +519,23 @@ function serveGatewayPortal(req, res) {
 
   <div class="grid">
     <div class="card">
+      <h2><span>🌐 Dominios <code>.fox</code></span></h2>
+      <table>
+        <thead><tr><th>Dominio</th><th>Aplicación</th><th>Estado</th></tr></thead>
+        <tbody>
+          ${listFoxDomains().map(d => `
+            <tr>
+              <td><a class="link-btn" href="${escapeHtml(d.url)}">${escapeHtml(d.domain)}</a></td>
+              <td>${escapeHtml(d.name)} <code>${escapeHtml(d.target)}</code></td>
+              <td>${d.online ? '<span style="color:#3fb950;font-weight:700">● ONLINE</span>' : '<span style="color:#e3b341;font-weight:700">● SIN NODO</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <p style="font-size:0.85rem; margin-top:0.75rem">Para abrirlos en tu navegador: <code>foxy domains setup</code> (registra los dominios en tu equipo) o usa el proxy <code>foxy vpn connect</code>.</p>
+    </div>
+
+    <div class="card">
       <h2>
         Servidores Activos en Nodos Donantes
         <span style="font-size:0.9rem; color:var(--text-muted)">${tunnels.length} conectados</span>
@@ -541,6 +595,33 @@ function serveNodeOffline(res, subdomain) {
   `);
 }
 
-httpServer.listen(HTTP_PORT, () => {
+const HTTP_HOST = process.env.FOXY_GATEWAY_HOST || '0.0.0.0';
+const httpServer = http.createServer(handleIngressRequest);
+httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
   console.log(`[Foxy Gateway] Public HTTP Ingress listening on http://localhost:${HTTP_PORT}`);
 });
+
+// HTTPS ingress for the .fox domains, with a locally generated certificate
+if (HTTPS_PORT) {
+  try {
+    const sslCreds = ensureFoxSslCredentials();
+    const tlsOptions = { key: sslCreds.key, cert: sslCreds.cert };
+    const httpsServer = https.createServer(tlsOptions, handleIngressRequest);
+    httpsServer.on('error', (err) => console.warn(`[Foxy Gateway] ⚠️ HTTPS :${HTTPS_PORT} no disponible: ${err.message}`));
+    httpsServer.listen(HTTPS_PORT, HTTP_HOST, () => {
+      console.log(`[Foxy Gateway] 🔒 HTTPS Ingress (.fox) listening on https://localhost:${HTTPS_PORT}`);
+    });
+
+    // Opt-in: also bind 80/443 so .fox URLs work without a port (needs privileges)
+    if (process.env.FOXY_BIND_STANDARD_PORTS === 'true') {
+      const port80 = http.createServer(handleIngressRequest);
+      port80.on('error', (err) => console.warn(`[Foxy Gateway] ⚠️ Puerto 80 no disponible: ${err.message}`));
+      port80.listen(80, HTTP_HOST, () => console.log('[Foxy Gateway] 🌐 Puerto 80 activo'));
+      const port443 = https.createServer(tlsOptions, handleIngressRequest);
+      port443.on('error', (err) => console.warn(`[Foxy Gateway] ⚠️ Puerto 443 no disponible: ${err.message}`));
+      port443.listen(443, HTTP_HOST, () => console.log('[Foxy Gateway] 🔒 Puerto 443 activo'));
+    }
+  } catch (err) {
+    console.warn(`[Foxy Gateway] ⚠️ No se pudo iniciar HTTPS: ${err.message}`);
+  }
+}

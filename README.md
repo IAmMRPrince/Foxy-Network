@@ -139,6 +139,20 @@ Foxy Network es la capa de infraestructura de **[FOXY FINANCE](https://github.co
 3. **Cómputo distribuido verificado.** Foxy Finance envía trabajos de un **catálogo fijo** (`monte_carlo_gbm`, `matrix_benchmark`, `sha256_benchmark`, `latency_probe`) indicando solo parámetros. Los nodos nunca reciben código ni datos de estrategias. Con `replicas: 2` o `3` el mismo trabajo se ejecuta en varios nodos y solo se paga a los que coinciden.
 4. **Pago con `$FOXY`.** Un nodo vinculado puede pagar un plan de Foxy Finance quemando su saldo (`foxy finance pay FOXY_FINANCE_TRADER_PRO`), o on-chain con `FoxyTreasuryVault.paySubscriptionWithFoxy()`.
 
+## 🌐 Dominios `.fox` y alojamiento de Foxy Finance
+
+El gateway resuelve dominios `.fox` y los sirve por HTTP (`:8080`) y HTTPS (`:8443`) con un certificado local autofirmado:
+
+| Dominio | Destino |
+| :--- | :--- |
+| `www.foxynetwork.fox` | Portal del gateway |
+| `www.foxyfinance.fox`, `www.foxyfianance.fox` | Túnel `foxy-finance` (el SaaS de Foxy Finance) |
+| `<app>.foxynetwork.fox` | Túnel `<app>` |
+
+- **Abrirlos en tu navegador:** `node packages/foxy-cli/bin/foxy.js domains setup` (o `Configurar-Dominios-Fox.bat` en Windows) añade los dominios al archivo `hosts` y, en Windows, confía en el certificado local. Alternativa sin permisos de administrador: usar el proxy `foxy vpn connect`, que envía los nombres `.fox` al gateway.
+- **Publicar Foxy Finance desde tu nodo:** arranca el daemon con `FOXY_HOST_FINANCE=1`. Conecta el túnel `foxy-finance` con `127.0.0.1:8000` (`FOXY_FINANCE_PORT`) y, si no hay nada escuchando y existe la carpeta del proyecto (`FOXY_FINANCE_DIR` o una carpeta `FOXY FINANCE` junto a este repo), lo lanza con `uvicorn`. `npm start` lo activa solo cuando encuentra esa carpeta. Es una opción para el nodo del operador: los nodos de los donantes no la activan.
+- `.fox` no es un dominio de internet real: solo funciona en equipos configurados así o a través del proxy. Para puertos 80/443 sin número en la URL, `FOXY_BIND_STANDARD_PORTS=true` (requiere privilegios).
+
 ## 🖥️ Enlaces Rápidos del Ecosistema
 
 - **Panel de Control del Donante:** [http://localhost:4040](http://localhost:4040)
