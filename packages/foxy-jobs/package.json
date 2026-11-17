@@ -1,0 +1,8 @@
+{
+  "name": "foxy-jobs",
+  "version": "0.2.0",
+  "description": "Foxy Network built-in compute job catalogue (synthetic, sandbox-free workloads)",
+  "type": "module",
+  "main": "src/index.js",
+  "license": "Apache-2.0"
+}

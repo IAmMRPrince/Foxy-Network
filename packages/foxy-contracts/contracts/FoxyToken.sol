@@ -214,6 +214,14 @@ contract FoxyToken {
             v := byte(0, mload(add(sig, 96)))
         }
         if (v < 27) v += 27;
-        return ecrecover(hash, v, r, s);
+        require(v == 27 || v == 28, "FoxyToken: invalid signature v");
+        // Reject the malleable upper-half s value (EIP-2)
+        require(
+            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+            "FoxyToken: invalid signature s"
+        );
+        address signer = ecrecover(hash, v, r, s);
+        require(signer != address(0), "FoxyToken: invalid signature");
+        return signer;
     }
 }

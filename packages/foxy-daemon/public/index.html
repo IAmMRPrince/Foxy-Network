@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>🦊 Foxy Daemon — Panel del Nodo Donante</title>
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -206,6 +208,7 @@
     th, td { text-align: left; padding: 0.8rem 0.6rem; border-bottom: 1px solid var(--card-border); }
     th { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
 
+    .type-foxy-finance { background: rgba(255, 107, 53, 0.2); color: #ff6b35; border: 1px solid rgba(255, 107, 53, 0.4); }
     .type-pill {
       font-size: 0.75rem;
       padding: 3px 8px;
@@ -217,7 +220,6 @@
     .type-node { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
     .type-docker { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
     .type-static { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-    .type-foxy-finance { background: rgba(255, 107, 53, 0.2); color: #ff6b35; border: 1px solid rgba(255, 107, 53, 0.4); }
 
     .btn-action {
       padding: 4px 8px;
@@ -336,7 +338,7 @@
         <div class="token-balance-box">
           <span class="token-balance" id="val-foxy-balance">0.0000</span>
           <span class="token-symbol">$FOXY</span>
-          <span style="font-size:1.1rem; color:#10b981; font-weight:700; margin-left:12px;" id="val-usd-estimate">≈ $0.00 USD</span>
+          <span style="font-size:1.1rem; color:#10b981; font-weight:700; margin-left:12px;" id="val-usd-estimate"></span>
         </div>
         <div style="font-size:0.85rem; color:var(--text-muted)">
           Ganancias Totales: <strong style="color:var(--text)" id="val-foxy-lifetime">0.0000 $FOXY</strong> | 
@@ -344,8 +346,8 @@
         </div>
         <div style="font-size:0.8rem; color:#8ba0c8; margin-top:6px; display:flex; gap:14px; flex-wrap:wrap;">
           <span>Valor de Recursos Aportados: <strong style="color:#10b981" id="val-resource-usd">$0.00 USD</strong></span>
-          <span>Precio Piso Respaldo: <strong style="color:var(--gold)" id="val-floor-price">$0.12 USD</strong></span>
-          <span>Respaldo Tesorería & Foxy Finance: <strong style="color:var(--cyan)" id="val-treasury-backing">$562.50 USD</strong></span>
+          <span>Valor de referencia (simulado): <strong style="color:var(--gold)" id="val-floor-price">$0.000 USD</strong></span>
+          <span>Reserva modelada (simulación): <strong style="color:var(--cyan)" id="val-treasury-backing">$0.00 USD</strong></span>
         </div>
       </div>
       <div>
@@ -373,11 +375,30 @@
         </div>
       </div>
 
+      <!-- Foxy Finance Link Card -->
+      <div class="card" style="border-left: 3px solid #10b981; padding: 1.25rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+          <div style="font-size:0.9rem; font-weight:700; color:#10b981;">📈 Foxy Finance</div>
+          <span id="finance-status" style="font-size:0.75rem; font-weight:700; color:#8ba0c8;">○ SIN VINCULAR</span>
+        </div>
+        <div style="font-size:0.8rem; color:var(--text-muted); line-height:1.7;">
+          <div>Tipo de equipo: <strong style="color:var(--text)" id="finance-class">--</strong></div>
+          <div>Actividad últimas 24 h: <strong style="color:var(--text)" id="finance-uptime">--</strong></div>
+          <div>Trabajos de cómputo: <strong style="color:var(--text)" id="finance-jobs">0 completados</strong></div>
+        </div>
+        <div id="finance-link-code" style="display:none; font-family:'JetBrains Mono',monospace; font-size:1.3rem; letter-spacing:0.15em; text-align:center; background:#070b14; padding:10px; border-radius:8px; margin:0.75rem 0 0.25rem; color:#10b981;"></div>
+        <div id="finance-link-hint" style="font-size:0.75rem; color:var(--text-muted); margin:0.5rem 0;">Vincula este equipo con tu cuenta de Foxy Finance para obtener descuentos por el hardware que aportas.</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn-action btn-open" onclick="generateFinanceLinkCode()" style="padding:5px 10px; font-size:0.75rem;">🔗 Generar código de vinculación</button>
+          <button class="btn-action btn-stop" id="finance-unlink-btn" onclick="unlinkFinance()" style="display:none; padding:5px 10px; font-size:0.75rem;">Desvincular</button>
+        </div>
+      </div>
+
       <!-- dVPN Exit Relay Card -->
       <div class="card" style="border-left: 3px solid var(--cyan); padding: 1.25rem;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
           <div style="font-size:0.9rem; font-weight:700; color:var(--cyan); display:flex; align-items:center; gap:6px;">
-            <span>🛡️ Red dVPN Cifrada (AES-256-GCM)</span>
+            <span>🛡️ Red dVPN Cifrada (X25519 + AES-256-GCM)</span>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <span id="vpn-status-badge" style="font-size:0.75rem; background:rgba(0,242,254,0.15); color:var(--cyan); padding:2px 8px; border-radius:6px; font-weight:700;">ACTIVO</span>
@@ -505,11 +526,29 @@
   </div>
 
   <script>
+    // Session token handed out by the local daemon with this page. Every API
+    // call must carry it, so no other website can drive this panel.
+    const SESSION_TOKEN = '__FOXY_SESSION_TOKEN__';
+
+    function api(path, options = {}) {
+      const headers = { 'X-Foxy-Token': SESSION_TOKEN };
+      if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+      return fetch(path, {
+        method: options.method || 'GET',
+        headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined
+      });
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
     let currentWalletAddress = '';
 
     async function fetchState() {
       try {
-        const res = await fetch('/api/state');
+        const res = await api('/api/state');
         const data = await res.json();
 
         // Update basic info
@@ -521,7 +560,7 @@
           currentWalletAddress = data.wallet.activePayoutAddress || data.wallet.generatedAddress;
           const displayEl = document.getElementById('wallet-address-display');
           if (data.wallet.customPayoutAddress) {
-            displayEl.innerHTML = '<span style="color:var(--purple)">[MetaMask]</span> ' + currentWalletAddress;
+            displayEl.innerHTML = '<span style="color:var(--purple)">[MetaMask]</span> ' + esc(currentWalletAddress);
           } else {
             displayEl.textContent = currentWalletAddress;
           }
@@ -547,10 +586,10 @@
         // Rewards info
         if (data.rewards) {
           const balance = data.rewards.balance || 0;
-          const floorPrice = data.rewards.tokenFloorPriceUsd || 0.12;
+          const floorPrice = data.rewards.tokenFloorPriceUsd || 0;
           const usdVal = (balance * floorPrice).toFixed(2);
           document.getElementById('val-foxy-balance').textContent = balance.toFixed(4);
-          document.getElementById('val-usd-estimate').textContent = '≈ $' + usdVal + ' USD';
+          document.getElementById('val-usd-estimate').textContent = floorPrice > 0 ? '≈ $' + usdVal + ' USD (referencia simulada)' : '';
           document.getElementById('val-foxy-lifetime').textContent = (data.rewards.lifetimeEarnings || 0).toFixed(4) + ' $FOXY';
           document.getElementById('val-foxy-epochs').textContent = data.rewards.epochsSettled || 0;
           document.getElementById('tier-display').textContent = (data.rewards.tier || 'STANDARD') + ' TIER';
@@ -565,6 +604,8 @@
             document.getElementById('val-treasury-backing').textContent = '$' + data.rewards.treasuryBackingPoolUsd.toFixed(2) + ' USD';
           }
         }
+
+        renderFinance(data);
 
         // Engine info
         if (data.runtime) {
@@ -612,20 +653,17 @@
           tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted)">No hay cargas activas.</td></tr>';
         } else {
           tbody.innerHTML = workloads.map(w => {
-            const directUrl = 'http://localhost:8080/t/' + w.subdomain + '/';
-            const foxDomainBadge = w.foxDomain
-              ? `<div style="margin-top:3px"><a href="${w.foxDomain}" target="_blank" style="color:var(--cyan);font-size:0.75rem;text-decoration:none;font-family:'JetBrains Mono',monospace">🌐 ${w.foxDomain} ↗</a></div>`
-              : '';
+            const directUrl = 'http://localhost:8080/t/' + encodeURIComponent(w.subdomain) + '/';
             return `
               <tr>
-                <td><strong>${w.name}</strong>${foxDomainBadge}</td>
-                <td><span class="type-pill type-${w.type}">${w.type}</span></td>
-                <td><code>${w.subdomain}</code></td>
-                <td><code>:${w.port}</code></td>
-                <td><span style="color:#10b981; font-weight:600">● ${w.status}</span></td>
+                <td><strong>${esc(w.name)}</strong>${w.foxDomain ? `<div style="margin-top:3px;font-size:0.75rem;color:var(--cyan);font-family:'JetBrains Mono',monospace">${esc(w.foxDomain)}</div>` : ''}</td>
+                <td><span class="type-pill type-${esc(w.type)}">${esc(w.type)}</span></td>
+                <td><code>${esc(w.subdomain)}</code></td>
+                <td><code>:${esc(w.port)}</code></td>
+                <td><span style="color:#10b981; font-weight:600">● ${esc(w.status)}</span></td>
                 <td>
-                  <a class="btn-action btn-open" href="${directUrl}" target="_blank">Abrir ↗</a>
-                  <button class="btn-action btn-stop" onclick="stopWorkload('${w.id}')">Detener</button>
+                  <a class="btn-action btn-open" href="${esc(directUrl)}" target="_blank" rel="noopener">Abrir ↗</a>
+                  <button class="btn-action btn-stop" data-stop-id="${esc(w.id)}">Detener</button>
                 </td>
               </tr>
             `;
@@ -637,9 +675,9 @@
         if (data.logs && data.logs.length > 0) {
           logsContainer.innerHTML = data.logs.map(log => {
             const type = log.type || 'info';
-            return '<div class="log-line log-' + type + '">' +
-              '<span class="log-time">[' + log.timestamp + ']</span>' +
-              '<span class="log-msg">' + log.message + '</span>' +
+            return '<div class="log-line log-' + esc(type) + '">' +
+              '<span class="log-time">[' + esc(log.timestamp) + ']</span>' +
+              '<span class="log-msg">' + esc(log.message) + '</span>' +
             '</div>';
           }).join('');
         }
@@ -649,16 +687,23 @@
     }
 
     async function toggleDonation() {
-      await fetch('/api/toggle-donation', { method: 'POST' });
+      await api('/api/toggle-donation', { method: 'POST', body: {} });
       fetchState();
     }
 
     async function claimRewards() {
       try {
-        const res = await fetch('/api/claim-rewards', { method: 'POST' });
+        const res = await api('/api/claim-rewards', { method: 'POST', body: {} });
         const data = await res.json();
         if (data.success) {
-          alert('🎉 ¡Retiro exitoso!\n\nCantidad: ' + data.amount + ' $FOXY\nTxHash: ' + data.receipt.txHash + '\nDestino: ' + data.receipt.to);
+          const r = data.receipt;
+          if (r.settlement === 'ONCHAIN_VOUCHER') {
+            alert('🎉 Voucher firmado por el oráculo.\n\nCantidad: ' + data.amount + ' $FOXY\nDestino: ' + r.to + '\nContrato: ' + r.contractAddress +
+                  '\n\nPara acuñar los tokens llama a claimContributionReward(amount, epoch, signature) con:\namount: ' + r.amountWei + '\nepoch: ' + r.epoch + '\nsignature: ' + r.signature);
+          } else {
+            alert('Reclamo registrado en MODO SIMULACIÓN.\n\nCantidad: ' + data.amount + ' $FOXY\nDestino: ' + r.to +
+                  '\n\nLa red aún no tiene un contrato FoxyToken configurado, así que no se transfirió ningún token real.');
+          }
           fetchState();
         } else {
           alert('No hay saldo acumulado para reclamar todavía. Espera que finalice la próxima época de liquidación.');
@@ -677,11 +722,7 @@
       if (!name || !subdomain) return;
 
       try {
-        const res = await fetch('/api/workloads/spawn', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type, name, subdomain })
-        });
+        const res = await api('/api/workloads/spawn', { method: 'POST', body: { type, name, subdomain } });
         const data = await res.json();
         if (data.success) {
           document.getElementById('spawn-name').value = '';
@@ -697,11 +738,7 @@
 
     async function stopWorkload(id) {
       if (!confirm('¿Deseas detener esta carga de trabajo?')) return;
-      await fetch('/api/workloads/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id })
-      });
+      await api('/api/workloads/stop', { method: 'POST', body: { id } });
       fetchState();
     }
 
@@ -717,11 +754,7 @@
       const addr = prompt('Ingresa tu dirección pública de MetaMask o billetera EVM (0x...):\n(Deja en blanco para volver a la auto-generada)', current);
       if (addr === null) return;
       try {
-        const res = await fetch('/api/wallet/custom-address', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: addr.trim() || null })
-        });
+        const res = await api('/api/wallet/custom-address', { method: 'POST', body: { address: addr.trim() || null } });
         const data = await res.json();
         if (data.success) {
           alert('✅ Dirección de cobro de recompensas actualizada:\n' + data.activeAddress);
@@ -736,8 +769,10 @@
 
     async function exportWalletKeys() {
       try {
-        const res = await fetch('/api/wallet/export');
+        if (!confirm('Vas a mostrar la clave privada de tu billetera en pantalla.\nAsegúrate de que nadie más esté viendo. ¿Continuar?')) return;
+        const res = await api('/api/wallet/export', { method: 'POST', body: { confirm: 'EXPORT' } });
         const keys = await res.json();
+        if (!res.ok) throw new Error(keys.error || 'No autorizado');
         alert('🔑 CREDENCIALES DE TU BILLETERA $FOXY:\n\n' +
               'Dirección:\n' + keys.address + '\n\n' +
               'Clave Privada (Para importar en MetaMask):\n' + keys.privateKey + '\n\n' +
@@ -750,13 +785,56 @@
 
     async function toggleVpnRelay() {
       try {
-        const res = await fetch('/api/vpn/toggle', { method: 'POST' });
+        const res = await api('/api/vpn/toggle', { method: 'POST', body: {} });
         const data = await res.json();
         fetchState();
       } catch (err) {
         console.error('Error toggling dVPN:', err);
       }
     }
+
+    // Foxy Finance link
+    async function generateFinanceLinkCode() {
+      try {
+        const res = await api('/api/finance/link-code', { method: 'POST', body: {} });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error');
+        const box = document.getElementById('finance-link-code');
+        box.textContent = data.code;
+        box.style.display = 'block';
+        document.getElementById('finance-link-hint').textContent =
+          'Escribe este código en tu cuenta de Foxy Finance (Nodos > Vincular). Caduca a las ' + new Date(data.expiresAt).toLocaleTimeString() + '.';
+      } catch (err) {
+        alert('No se pudo generar el código: ' + err.message);
+      }
+    }
+
+    async function unlinkFinance() {
+      if (!confirm('¿Desvincular este nodo de tu cuenta de Foxy Finance? Perderás el beneficio asociado.')) return;
+      await api('/api/finance/unlink', { method: 'POST', body: {} });
+      fetchState();
+    }
+
+    function renderFinance(data) {
+      const ff = data.foxyFinance || {};
+      const DISCOUNTS = { IOT: 15, MOBILE: 25, SBC: 50, PC: 70, SERVER: 100 };
+      const cls = ff.deviceClass || ff.localDeviceClass || 'PC';
+      document.getElementById('finance-status').textContent = ff.linked ? '● VINCULADO' : '○ SIN VINCULAR';
+      document.getElementById('finance-status').style.color = ff.linked ? '#10b981' : '#8ba0c8';
+      document.getElementById('finance-class').textContent = cls + ' → hasta ' + (DISCOUNTS[cls] || 0) + '% de descuento';
+      document.getElementById('finance-uptime').textContent = Math.round((ff.uptimeRatio24h || 0) * 100) + '% (mínimo 50%)';
+      document.getElementById('finance-jobs').textContent = (data.jobs ? data.jobs.completed : 0) + ' completados';
+      document.getElementById('finance-unlink-btn').style.display = ff.linked ? 'inline-block' : 'none';
+      if (ff.linked) {
+        document.getElementById('finance-link-code').style.display = 'none';
+        document.getElementById('finance-link-hint').textContent = 'Este nodo está aportando a tu cuenta de Foxy Finance.';
+      }
+    }
+
+    document.addEventListener('click', (e) => {
+      const id = e.target && e.target.dataset ? e.target.dataset.stopId : null;
+      if (id) stopWorkload(id);
+    });
 
     setInterval(fetchState, 1500);
     fetchState();

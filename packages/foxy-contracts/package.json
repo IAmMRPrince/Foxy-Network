@@ -1,10 +1,12 @@
 {
   "name": "foxy-contracts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Smart Contracts for Foxy Network Token ($FOXY) and Proof-of-Contribution DePIN Rewards",
   "scripts": {
-    "deploy": "node deploy.js"
+    "compile": "node compile.js",
+    "deploy": "node deploy.js",
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "erc20",
@@ -14,5 +16,8 @@
     "web3"
   ],
   "author": "Foxy Network Contributors",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "solc": "^0.8.26"
+  }
 }

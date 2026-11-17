@@ -1,6 +1,6 @@
 {
   "name": "foxy-finance-workload",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Foxy Finance Institutional Workload & Anchor Compute Client for Foxy Network",
   "main": "src/index.js",

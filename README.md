@@ -6,7 +6,9 @@
 ---
 
 ## 🎯 Objetivo General
-Permitir que cualquier usuario con un dispositivo conectado a internet (**Windows, macOS o Linux**) pueda virtualizar y donar recursos ociosos (CPU, RAM, ancho de banda y conexiones de red seguras). A cambio, el donante recibe recompensas automáticas en la criptomoneda nativa **`$FOXY`**. La red ofrece alojamiento de aplicaciones web en el edge y un **servicio VPN descentralizado (dVPN) con cifrado de extremo a extremo y política Zero-Logs**.
+Permitir que cualquier usuario con un dispositivo conectado a internet (**Windows, macOS o Linux**) pueda virtualizar y donar recursos ociosos (CPU, RAM, ancho de banda y conexiones de red seguras). A cambio, el donante recibe recompensas automáticas en la criptomoneda nativa **`$FOXY`**. La red ofrece alojamiento de aplicaciones web en el edge y un **servicio VPN descentralizado (dVPN) cifrado**.
+
+> ⚠️ **Estado del proyecto: prototipo (v0.2).** Funciona en local y tiene pruebas automáticas, pero no ha pasado una auditoría de seguridad externa ni tiene contratos desplegados en mainnet. Lee [`SECURITY.md`](SECURITY.md) antes de usarlo con fondos o datos reales.
 
 ---
 
@@ -20,15 +22,15 @@ Permitir que cualquier usuario con un dispositivo conectado a internet (**Window
 | **`foxy-gateway`** | `packages/foxy-gateway` | `8080` (HTTP) / `8081` (WS) | Pasarela de entrada que multiplexa peticiones HTTP a los túneles inversos y multiplexa las sesiones de datos cifrados de la dVPN. |
 | **`foxy-controller`**| `packages/foxy-controller` | `4000` (HTTP) | Plano de control y orquestador: registro de nodos, telemetría, ledger de recompensas `$FOXY`, firmas ECDSA de oráculo y conmutación por error (Failover). |
 | **`foxy-security`** | `packages/foxy-security` | Biblioteca | Motor de seguridad criptográfica: tokens de capacidad JWT HMAC-SHA256, identidades Ed25519 y derivación de claves simétricas. |
-| **`foxy-cli`** | `packages/foxy-cli` | CLI (`foxy`) | Línea de comandos para desarrolladores y donantes (`status`, `nodes`, `deploy`, `vpn`, `balance`, `claim`, `token`). |
+| **`foxy-cli`** | `packages/foxy-cli` | CLI (`foxy`) | Línea de comandos para desarrolladores y donantes (`status`, `nodes`, `deploy`, `vpn`, `balance`, `claim`, `link`, `finance`, `token`). |
 
 ---
 
 ## 💻 Compatibilidad Multiplataforma (Windows, macOS & Linux)
 
 ### 🪟 En Windows:
-* **Lanzador Interactivo:** Haz doble clic en **[`Foxy-Network.bat`](file:///d:/OneDrive/Desktop/Foxy/Foxy%20Network/Foxy-Network.bat)** o en el acceso directo de tu escritorio.
-* **Modo Bandeja del Sistema (System Tray):** Ejecuta **[`Foxy-Tray.bat`](file:///d:/OneDrive/Desktop/Foxy/Foxy%20Network/Foxy-Tray.bat)** para minimizar la app junto al reloj con menú contextual y notificaciones.
+* **Lanzador Interactivo:** Haz doble clic en **[`Foxy-Network.bat`](Foxy-Network.bat)** o en el acceso directo de tu escritorio.
+* **Modo Bandeja del Sistema (System Tray):** Ejecuta **[`Foxy-Tray.bat`](Foxy-Tray.bat)** para minimizar la app junto al reloj con menú contextual y notificaciones.
 * **Modo Totalmente Invisible:** Ejecuta **`Foxy-Daemon-Silent.vbs`** para donar en segundo plano sin ventanas.
 
 ### 🍏 En macOS & 🐧 Linux:
@@ -58,7 +60,7 @@ Foxy Network cuenta con una economía basada en un contrato inteligente **ERC-20
 * **Símbolo:** `$FOXY`
 * **Nombre:** `Foxy Network Token`
 * **Suministro Máximo:** 1,000,000,000 $FOXY
-* **Contrato Inteligente:** [`packages/foxy-contracts/contracts/FoxyToken.sol`](file:///d:/OneDrive/Desktop/Foxy/Foxy%20Network/packages/foxy-contracts/contracts/FoxyToken.sol)
+* **Contrato Inteligente:** [`packages/foxy-contracts/contracts/FoxyToken.sol`](packages/foxy-contracts/contracts/FoxyToken.sol)
 
 ### Mecanismo de Recompensas (Proof-of-Contribution)
 Cada 30 segundos (una época), el controlador calcula las contribuciones verificadas y acredita tokens al balance del donante:
@@ -71,8 +73,8 @@ Cada 30 segundos (una época), el controlador calcula las contribuciones verific
 El cliente donante genera automáticamente una billetera EVM (`0x...`) segura y privada sin requerir conocimientos previos. Desde el panel web ([http://localhost:4040](http://localhost:4040)), el usuario puede:
 * Copiar su dirección de cobro.
 * Vincular su propia dirección de **MetaMask** para recibir los pagos directamente.
-* Exportar su clave privada o frase semilla de 12 palabras.
-* Reclamar sus recompensas con firma criptográfica ECDSA lista para interactuar con la blockchain.
+* Exportar su clave privada o frase semilla de 12 palabras (el panel solo escucha en `127.0.0.1` y exige un token de sesión local).
+* Reclamar sus recompensas: el oráculo firma un *voucher* ECDSA que el donante canjea en `FoxyToken.claimContributionReward()`. Sin contrato configurado (`FOXY_TOKEN_ADDRESS`) el reclamo queda marcado como **simulación**.
 
 ### 💎 Respaldo por Servicios Premium & Monetización del Creador
 El token `$FOXY` no es inflacionario sin sustento: su valor está respaldado por el flujo de ingresos de **Servicios Premium** y la **Demanda Institucional de Foxy Finance**:
@@ -82,11 +84,13 @@ El token `$FOXY` no es inflacionario sin sustento: su valor está respaldado por
   - **Enterprise dVPN Business ($49/mes):** IPs residenciales estáticas dedicadas y pools de ancho de banda garantizado.
 * **Modelo de Reparto de Ingresos (Smart Contract `FoxyTreasuryVault.sol`):**
   - 👑 **40% Margen del Fundador:** Ingreso neto directo a la billetera del creador del proyecto.
-  - 🏦 **45% Fondo de Respaldo de Liquidez:** Bóveda de tesorería que garantiza el valor piso en USD de `$FOXY` y paga a los donantes según el valor real de mercado de sus recursos.
-  - 🔥 **15% Buyback & Burn:** Recompra automática y quema de tokens en DEX, generando escasez y valor deflacionario.
+  - 🏦 **45% Reserva de Donantes:** queda en la bóveda y el propietario del contrato la desembolsa a los donantes. **No fija ni garantiza un precio** para `$FOXY`.
+  - 🔥 **15% Recompra y Quema:** los pagos en `$FOXY` queman ese 15% en el acto; en pagos con moneda nativa se aparta para que el propietario lo recompre en un DEX y lo queme (el contrato no integra un router DEX).
+
+> El motor `PremiumEngine` del controlador es un **modelo contable simulado**: no custodia fondos. El dinero real solo se mueve a través de `FoxyTreasuryVault.sol`.
 
 ### 📈 Respaldo Institucional por Cómputo de Foxy Finance
-El ecosistema **Foxy Finance** cubre una parte significativa de su capacidad de cómputo en la nube (cálculo de riesgo DeFi Monte Carlo, escaneo de arbitraje multi-DEX y liquidación de libros contables) ejecutándose directamente sobre los nodos de Foxy Network. Cada trabajo computacional inyecta liquidez en el fondo de respaldo del token, garantizando demanda orgánica y volumen continuo.
+El ecosistema **Foxy Finance** cubre una parte significativa de su capacidad de cómputo en la nube (cálculo de riesgo DeFi Monte Carlo, escaneo de arbitraje multi-DEX y liquidación de libros contables) ejecutándose directamente sobre los nodos de Foxy Network. Los nodos ejecutan únicamente trabajos de un catálogo fijo (Monte Carlo, álgebra lineal, SHA-256, sondas de latencia) y cobran `$FOXY` por cada unidad de cómputo verificada. Detalles en [`docs/FOXY_FINANCE_INTEGRATION.md`](docs/FOXY_FINANCE_INTEGRATION.md).
 
 ---
 
@@ -94,16 +98,16 @@ El ecosistema **Foxy Finance** cubre una parte significativa de su capacidad de 
 
 Foxy Network transforma los nodos donantes en repetidores de salida seguros para ofrecer navegación privada y anónima:
 
-* **Cifrado de Extremo a Extremo (E2EE):** Todo el tráfico entre el usuario de la VPN y el nodo donante se encapsula con **AES-256-GCM** y claves de sesión simétricas rotatorias.
-* **Política Zero-Knowledge & Zero-Logs:** Los nodos de la red no guardan registros de peticiones, URLs visitadas ni direcciones IP de los clientes.
-* **Firewall de Protección para el Donante:** El repetidor bloquea de forma estricta los puertos de spam (SMTP 25, 465, 587) y escaneos de fuerza bruta (SSH 22, SMB 445), permitiendo únicamente tráfico web seguro (HTTP 80, HTTPS 443, DNS 53, etc.).
+* **Cifrado cliente ↔ nodo de salida:** cada sesión acuerda una clave efímera con **X25519** y cifra con **AES-256-GCM**. El gateway solo retransmite el texto cifrado. *Limitación conocida:* el intercambio aún no está autenticado con la identidad del nodo, así que un gateway malicioso podría interponerse activamente; el tráfico HTTPS sigue protegido por su propio TLS.
+* **Sin registro de destinos:** el software del nodo no escribe en sus logs los hosts visitados. Como en cualquier VPN, el nodo de salida ve a qué servidor se conecta cada sesión (no su contenido si es HTTPS).
+* **Firewall de Protección para el Donante:** el repetidor solo abre conexiones a **direcciones públicas** en los puertos web (80, 443, 8080, 8443). Nunca alcanza `localhost`, la red local del donante ni direcciones de metadatos de nube, y resuelve el DNS una sola vez para evitar *DNS rebinding*.
 
 ### Cómo usar la VPN:
 1. **Iniciar el Cliente Proxy Local:**
    ```bash
    node packages/foxy-cli/bin/foxy.js vpn connect
    ```
-   *(Inicia un proxy HTTP CONNECT y SOCKS5 local en `127.0.0.1:1080`)*.
+   *(Inicia un proxy HTTP / HTTP CONNECT local en `127.0.0.1:1080`)*.
 2. **Navegar a través de la Red Foxy:**
    Configura tu navegador (Chrome, Firefox) o cliente para usar el proxy `127.0.0.1:1080`.
    O prueba en terminal:
@@ -117,20 +121,37 @@ Foxy Network transforma los nodos donantes en repetidores de salida seguros para
 
 ---
 
-## 🔗 Integración Estratégica con FOXY FINANCE (DePIN Hardware Contribution)
+## 🔗 Integración con FOXY FINANCE
 
-Foxy Network actúa como el sustrato descentralizado de infraestructura para la plataforma de trading cuantitativo **[FOXY FINANCE](https://github.com/IAmMRPrince/foxy-finance)**. Los donantes de recursos de hardware pueden vincular sus equipos para obtener beneficios directos:
+Foxy Network es la capa de infraestructura de **[FOXY FINANCE](https://github.com/IAmMRPrince/foxy-finance)**. Los dos proyectos se conectan por una API firmada (HMAC-SHA256); la guía completa y los clientes listos para usar están en [`docs/FOXY_FINANCE_INTEGRATION.md`](docs/FOXY_FINANCE_INTEGRATION.md).
 
-### 🎁 Matriz de Beneficios en Foxy Finance:
-- **⚡ ESP32 / Microcontroladores IoT (15% Descuento)**: Telemetría de latencia de red global 24/7 y sondeo de nodos de exchanges (Binance, Alpaca, MetaTrader 5).
-- **📱 Celulares Android (Termux / Edge) (25% Descuento)**: Nodo centinela móvil de respaldo y verificación de redundancia de feeds.
-- **🍓 Raspberry Pi 3/4/5 / SBCs (50% Descuento o Plan Básico Bonificado)**: Auditoría continua de integridad de velas históricas y caché de libro de órdenes.
-- **💻 Computadores Personales / Laptops (70% Descuento)**: Ejecución de cuadrículas de cómputo sintético y simulaciones de estrés.
-- **🖥️ Servidores VPS / Bare Metal (100% GRATIS Pro Quant)**: Clúster institucional de alto rendimiento. Otorga membresía Pro Quant completa de por vida mientras el nodo esté activo.
+1. **Vincular hardware con la cuenta.** El donante pulsa *Generar código de vinculación* en su panel (o `foxy link`) y escribe ese código de un solo uso en Foxy Finance. Solo quien controla el nodo puede generarlo, así que nadie puede atribuirse el nodo de otro usuario.
+2. **Descuentos por hardware aportado.** Foxy Finance consulta el beneficio del usuario antes de cobrar. El nodo debe seguir en línea (≥ 50 % de las últimas 24 h):
 
-### 🛡️ Protección de Propiedad Intelectual & Seguridad Anti-IDOR:
-1. **Caja Negra Soberana**: Los nodos donantes de Foxy Network ejecutan únicamente pruebas sintéticas de latencia de red y benchmarks de cómputo (SHA256 / álgebra lineal sintética). El código fuente cuántico institucional (Fourier, DFA, OBI, redes neuronales) reside **estrictamente en el servidor central de Foxy Finance**.
-2. **Aislamiento Criptográfico Anti-IDOR**: La asignación de beneficios y descuentos está vinculada a los tokens de sesión únicos `TenantContext.get_user_id()`, impidiendo que un usuario interfiera o reclame recompensas de nodos ajenos.
+   | Equipo | Clase | Beneficio en Foxy Finance |
+   | :--- | :--- | :--- |
+   | Microcontrolador / IoT | `IOT` | 15 % de descuento *(reservado: el daemon actual requiere Node.js)* |
+   | Celular Android (Termux) | `MOBILE` | 25 % |
+   | Raspberry Pi / SBC | `SBC` | 50 % |
+   | PC / laptop | `PC` | 70 % |
+   | Servidor VPS / bare metal (≥ 4 núcleos, ≥ 8 GB) | `SERVER` | 100 % — plan Pro Quant |
+
+3. **Cómputo distribuido verificado.** Foxy Finance envía trabajos de un **catálogo fijo** (`monte_carlo_gbm`, `matrix_benchmark`, `sha256_benchmark`, `latency_probe`) indicando solo parámetros. Los nodos nunca reciben código ni datos de estrategias. Con `replicas: 2` o `3` el mismo trabajo se ejecuta en varios nodos y solo se paga a los que coinciden.
+4. **Pago con `$FOXY`.** Un nodo vinculado puede pagar un plan de Foxy Finance quemando su saldo (`foxy finance pay FOXY_FINANCE_TRADER_PRO`), o on-chain con `FoxyTreasuryVault.paySubscriptionWithFoxy()`.
+
+## 🌐 Dominios `.fox` y alojamiento de Foxy Finance
+
+El gateway resuelve dominios `.fox` y los sirve por HTTP (`:8080`) y HTTPS (`:8443`) con un certificado local autofirmado:
+
+| Dominio | Destino |
+| :--- | :--- |
+| `www.foxynetwork.fox` | Portal del gateway |
+| `www.foxyfinance.fox`, `www.foxyfianance.fox` | Túnel `foxy-finance` (el SaaS de Foxy Finance) |
+| `<app>.foxynetwork.fox` | Túnel `<app>` |
+
+- **Abrirlos en tu navegador:** `node packages/foxy-cli/bin/foxy.js domains setup` (o `Configurar-Dominios-Fox.bat` en Windows) añade los dominios al archivo `hosts` y, en Windows, confía en el certificado local. Alternativa sin permisos de administrador: usar el proxy `foxy vpn connect`, que envía los nombres `.fox` al gateway.
+- **Publicar Foxy Finance desde tu nodo:** arranca el daemon con `FOXY_HOST_FINANCE=1`. Conecta el túnel `foxy-finance` con `127.0.0.1:8000` (`FOXY_FINANCE_PORT`) y, si no hay nada escuchando y existe la carpeta del proyecto (`FOXY_FINANCE_DIR` o una carpeta `FOXY FINANCE` junto a este repo), lo lanza con `uvicorn`. `npm start` lo activa solo cuando encuentra esa carpeta. Es una opción para el nodo del operador: los nodos de los donantes no la activan.
+- `.fox` no es un dominio de internet real: solo funciona en equipos configurados así o a través del proxy. Para puertos 80/443 sin número en la URL, `FOXY_BIND_STANDARD_PORTS=true` (requiere privilegios).
 
 ## 🖥️ Enlaces Rápidos del Ecosistema
 
@@ -161,7 +182,14 @@ node packages/foxy-cli/bin/foxy.js token
 node packages/foxy-cli/bin/foxy.js balance
 
 # Reclamar tokens a tu billetera con firma Web3:
-node packages/foxy-cli/bin/foxy.js claim <nodeId> 0xTuDireccionMetaMask
+node packages/foxy-cli/bin/foxy.js claim 0xTuDireccionMetaMask
+
+# Vincular este nodo con tu cuenta de Foxy Finance (genera un código de un solo uso):
+node packages/foxy-cli/bin/foxy.js link
+
+# Estado del enlace con Foxy Finance / lanzar un trabajo de prueba con 2 réplicas:
+node packages/foxy-cli/bin/foxy.js finance status
+node packages/foxy-cli/bin/foxy.js finance dispatch monte_carlo_gbm 2
 
 # Desplegar un servicio web en la red:
 node packages/foxy-cli/bin/foxy.js deploy mi-app "Mi Aplicacion Cloud"
