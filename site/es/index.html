@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Foxy Network — DePIN de código abierto: hosting edge, VPN descentralizada y recompensas cripto</title>
+  <meta name="description" content="Foxy Network es una DePIN de código abierto. Comparte tu CPU y ancho de banda ociosos desde Windows, macOS o Linux, aloja aplicaciones web con túneles inversos, ofrece una VPN descentralizada cifrada y gana recompensas $FOXY.">
+  <meta name="keywords" content="DePIN, VPN descentralizada, dVPN, ganar cripto compartiendo internet, ganar criptomonedas con ancho de banda, nube descentralizada, hosting edge, túnel inverso, computación distribuida, código abierto, $FOXY">
+  <link rel="canonical" href="https://iammrprince.github.io/Foxy-Network/es/">
+  <link rel="alternate" hreflang="en" href="https://iammrprince.github.io/Foxy-Network/">
+  <link rel="alternate" hreflang="es" href="https://iammrprince.github.io/Foxy-Network/es/">
+  <link rel="alternate" hreflang="x-default" href="https://iammrprince.github.io/Foxy-Network/">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#0b0f19">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Foxy Network">
+  <meta property="og:title" content="Foxy Network — DePIN de código abierto">
+  <meta property="og:description" content="Comparte CPU y ancho de banda ociosos, aloja apps en el edge, ofrece una VPN descentralizada cifrada y gana $FOXY.">
+  <meta property="og:url" content="https://iammrprince.github.io/Foxy-Network/es/">
+  <meta property="og:image" content="https://iammrprince.github.io/Foxy-Network/assets/og-image-es.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Foxy Network — DePIN de código abierto">
+  <meta property="og:locale" content="es_ES">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Foxy Network — DePIN de código abierto">
+  <meta name="twitter:description" content="Comparte CPU y ancho de banda ociosos, aloja apps en el edge, ofrece una VPN descentralizada cifrada y gana $FOXY.">
+  <meta name="twitter:image" content="https://iammrprince.github.io/Foxy-Network/assets/og-image-es.png">
+
+  <link rel="stylesheet" href="../assets/style.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Foxy Network",
+    "description": "DePIN de código abierto para compartir CPU y ancho de banda ociosos, alojar aplicaciones web con túneles inversos, ofrecer una VPN descentralizada cifrada y ganar recompensas $FOXY.",
+    "url": "https://iammrprince.github.io/Foxy-Network/es/",
+    "downloadUrl": "https://github.com/IAmMRPrince/Foxy-Network",
+    "codeRepository": "https://github.com/IAmMRPrince/Foxy-Network",
+    "applicationCategory": "NetworkingApplication",
+    "operatingSystem": "Windows, macOS, Linux",
+    "softwareVersion": "0.2.0",
+    "license": "https://www.apache.org/licenses/LICENSE-2.0",
+    "image": "https://iammrprince.github.io/Foxy-Network/assets/og-image-es.png",
+    "screenshot": "https://iammrprince.github.io/Foxy-Network/assets/dashboard.jpg",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "inLanguage": "es"
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      { "@type": "Question", "name": "¿Qué es Foxy Network?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Una DePIN (red de infraestructura física descentralizada) de código abierto. Un nodo ligero permite a cualquiera aportar CPU y ancho de banda sobrantes para alojar aplicaciones web, retransmitir una VPN cifrada y ejecutar trabajos de cómputo, ganando recompensas $FOXY." } },
+      { "@type": "Question", "name": "¿Es seguro ejecutar un nodo?",
+        "acceptedAnswer": { "@type": "Answer", "text": "El nodo de salida solo se conecta a direcciones públicas en puertos web y nunca a tu red local, el panel solo escucha en tu propio equipo y los trabajos de cómputo salen de un catálogo fijo sin código remoto. El proyecto sigue siendo un prototipo sin auditoría externa." } },
+      { "@type": "Question", "name": "¿$FOXY es una criptomoneda real?",
+        "acceptedAnswer": { "@type": "Answer", "text": "$FOXY es un contrato ERC-20 listo para cadenas EVM como Base, Polygon o Arbitrum. Aún no está desplegado en mainnet; mientras no se configure un contrato, los reclamos de recompensas funcionan en modo simulación. $FOXY no tiene un precio garantizado." } },
+      { "@type": "Question", "name": "¿Qué equipos son compatibles?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Cualquier equipo con Windows, macOS o Linux y Node.js 20 o superior, desde portátiles y Raspberry Pi hasta servidores VPS o bare metal." } }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Saltar al contenido</a>
+
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="./"><img src="../assets/favicon.svg" alt="" width="30" height="30">Foxy Network</a>
+      <nav class="top" aria-label="Principal">
+        <a class="hide-sm" href="#funciones">Funciones</a>
+        <a class="hide-sm" href="#ganar">Recompensas</a>
+        <a class="hide-sm" href="#empezar">Empezar</a>
+        <a href="https://github.com/IAmMRPrince/Foxy-Network">GitHub</a>
+        <a class="lang" href="../" hreflang="en" lang="en">EN</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="hero">
+      <div class="wrap">
+        <span class="pill">Código abierto · Apache-2.0 · prototipo v0.2</span>
+        <h1>Convierte tu hardware ocioso en una <span>nube descentralizada</span></h1>
+        <p class="lead">Foxy Network es una DePIN de código abierto. Ejecuta un nodo ligero en Windows, macOS o Linux para alojar aplicaciones web en el edge, retransmitir una VPN cifrada y ejecutar trabajos de cómputo, y gana <strong>$FOXY</strong> por cada minuto y megabyte que aportas.</p>
+        <div class="cta">
+          <a class="btn primary" href="#empezar">Ejecutar un nodo</a>
+          <a class="btn" href="https://github.com/IAmMRPrince/Foxy-Network">⭐ Danos una estrella en GitHub</a>
+        </div>
+        <div class="shot">
+          <img src="../assets/dashboard.jpg" alt="Panel del nodo donante de Foxy Network con recompensas $FOXY, billetera Web3, vínculo con Foxy Finance y repetidor dVPN cifrado" width="1600" height="1075" fetchpriority="high">
+        </div>
+      </div>
+    </div>
+
+    <section id="funciones">
+      <div class="wrap">
+        <h2>Todo lo que hace un nodo</h2>
+        <p class="sub">Una sola instalación y tres formas de aportar. Cada una se mide y se recompensa.</p>
+        <div class="grid">
+          <div class="card"><div class="icon">🌐</div><h3>Hosting en el edge</h3><p>Sirve aplicaciones web con túneles inversos. Sin abrir puertos ni tener IP pública, y con conmutación por error si un nodo se desconecta.</p></div>
+          <div class="card"><div class="icon">🛡️</div><h3>VPN descentralizada cifrada</h3><p>Retransmite el tráfico de otros usuarios con un túnel X25519 + AES-256-GCM por sesión. Tu red local queda fuera de alcance.</p></div>
+          <div class="card"><div class="icon">🧮</div><h3>Cómputo verificado</h3><p>Ejecuta trabajos de Monte Carlo, álgebra lineal y latencia de un catálogo fijo. Las réplicas se comparan antes de pagar a nadie.</p></div>
+          <div class="card"><div class="icon">🪙</div><h3>Recompensas $FOXY</h3><p>Se liquidan cada 30 segundos. Canjea vouchers firmados en un contrato ERC-20 en Base, Polygon o Arbitrum.</p></div>
+          <div class="card"><div class="icon">🔐</div><h3>Billetera integrada</h3><p>Se crea una billetera EVM para ti, o conecta tu dirección de MetaMask para recibir las recompensas directamente.</p></div>
+          <div class="card"><div class="icon">💻</div><h3>Funciona en todas partes</h3><p>Modo bandeja y modo silencioso en Windows, servicios launchd en macOS y systemd en Linux, desde un portátil hasta un servidor.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="como">
+      <div class="wrap">
+        <h2>Cómo funciona</h2>
+        <p class="sub">Tres componentes, todos en un mismo repositorio de código abierto.</p>
+        <div class="steps">
+          <div class="card"><h3>Nodo donante</h3><p>Corre en tu equipo. Abre un túnel saliente hacia el gateway, sirve aplicaciones, retransmite sesiones de la VPN y ejecuta trabajos de cómputo.</p></div>
+          <div class="card"><h3>Gateway</h3><p>Punto de entrada público. Envía las peticiones web y las sesiones de la VPN al nodo correcto y sirve los dominios <code>.fox</code> por HTTPS.</p></div>
+          <div class="card"><h3>Controlador</h3><p>Plano de control. Registra los nodos, mide el tiempo en línea, lleva el registro de recompensas y firma los vouchers que canjeas on-chain.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ganar">
+      <div class="wrap">
+        <h2>Gana $FOXY</h2>
+        <p class="sub">Recompensas por época de 30 segundos, multiplicadas por el nivel de tu hardware (1,0×, 1,5× o 2,0×).</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Aporte</th><th>Recompensa</th></tr></thead>
+            <tbody>
+              <tr><td>Tiempo en línea</td><td class="num">0,25 $FOXY / minuto</td></tr>
+              <tr><td>Ancho de banda web servido</td><td class="num">1,50 $FOXY / MB</td></tr>
+              <tr><td>Tráfico de la VPN retransmitido</td><td class="num">2,00 $FOXY / MB</td></tr>
+              <tr><td>Unidad de cómputo verificada</td><td class="num">3,50 $FOXY / unidad</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">$FOXY aún no está desplegado en mainnet: mientras no se configure un contrato del token, los reclamos funcionan en modo simulación. $FOXY no tiene un precio garantizado.</p>
+      </div>
+    </section>
+
+    <section id="finance">
+      <div class="wrap">
+        <h2>Pensado para Foxy Finance</h2>
+        <p class="sub">Foxy Network es la capa de infraestructura de Foxy Finance, una plataforma de trading cuantitativo. Vincula tu nodo con un código de un solo uso y obtén un descuento por el hardware que aportas.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Tu equipo</th><th>Descuento en Foxy Finance</th></tr></thead>
+            <tbody>
+              <tr><td>Celular Android (Termux)</td><td class="num">25 %</td></tr>
+              <tr><td>Raspberry Pi / placa SBC</td><td class="num">50 %</td></tr>
+              <tr><td>PC / portátil</td><td class="num">70 %</td></tr>
+              <tr><td>VPS / bare metal (4+ núcleos, 8+ GB)</td><td class="num">100 % · plan Pro Quant</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">El descuento se mantiene mientras el nodo esté en línea al menos la mitad de las últimas 24 horas. Desarrolladores: consulten la <a href="https://github.com/IAmMRPrince/Foxy-Network/blob/main/docs/FOXY_FINANCE_INTEGRATION.md">guía de integración</a> y los SDK de JavaScript y Python.</p>
+      </div>
+    </section>
+
+    <section id="empezar">
+      <div class="wrap two">
+        <div>
+          <h2>Empieza en un minuto</h2>
+          <p class="sub">Necesitas <a href="https://nodejs.org/">Node.js 20+</a>. Después abre <code>http://localhost:4040</code> para ver tu nodo.</p>
+          <div class="warn">⚠️ Prototipo: tiene pruebas automáticas pero aún no una auditoría de seguridad externa. Lee <a href="https://github.com/IAmMRPrince/Foxy-Network/blob/main/SECURITY.md">SECURITY.md</a> antes de usar fondos reales.</div>
+        </div>
+        <div class="cmds">
+          <pre><code>git clone https://github.com/IAmMRPrince/Foxy-Network.git</code></pre>
+          <pre><code>cd Foxy-Network</code></pre>
+          <pre><code>npm install</code></pre>
+          <pre><code>npm start</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq">
+      <div class="wrap">
+        <h2>Preguntas frecuentes</h2>
+        <details><summary>¿Qué es Foxy Network?</summary><p>Una DePIN (red de infraestructura física descentralizada) de código abierto. Un nodo ligero permite a cualquiera aportar CPU y ancho de banda sobrantes para alojar aplicaciones web, retransmitir una VPN cifrada y ejecutar trabajos de cómputo, ganando recompensas $FOXY.</p></details>
+        <details><summary>¿Es seguro ejecutar un nodo?</summary><p>El nodo de salida solo se conecta a direcciones públicas en puertos web y nunca a tu red local, el panel solo escucha en tu propio equipo y los trabajos de cómputo salen de un catálogo fijo sin código remoto. El proyecto sigue siendo un prototipo sin auditoría externa.</p></details>
+        <details><summary>¿$FOXY es una criptomoneda real?</summary><p>$FOXY es un contrato ERC-20 listo para cadenas EVM como Base, Polygon o Arbitrum. Aún no está desplegado en mainnet; mientras no se configure un contrato, los reclamos de recompensas funcionan en modo simulación. $FOXY no tiene un precio garantizado.</p></details>
+        <details><summary>¿Qué equipos son compatibles?</summary><p>Cualquier equipo con Windows, macOS o Linux y Node.js 20 o superior, desde portátiles y Raspberry Pi hasta servidores VPS o bare metal.</p></details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <span>© 2026 colaboradores de Foxy Network · <a href="https://github.com/IAmMRPrince/Foxy-Network/blob/main/LICENSE">Apache-2.0</a></span>
+      <span><a href="https://github.com/IAmMRPrince/Foxy-Network">GitHub</a> · <a href="https://github.com/IAmMRPrince/Foxy-Network/issues">Issues</a> · <a href="../" hreflang="en" lang="en">English</a></span>
+    </div>
+  </footer>
+</body>
+</html>

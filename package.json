@@ -3,7 +3,15 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Foxy Network - Decentralized Cloud Server Network & DePIN Engine",
+  "description": "Open-source DePIN: share idle CPU and bandwidth, host web apps through reverse tunnels, relay an encrypted dVPN and earn $FOXY rewards.",
+  "homepage": "https://iammrprince.github.io/Foxy-Network/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IAmMRPrince/Foxy-Network.git"
+  },
+  "bugs": {
+    "url": "https://github.com/IAmMRPrince/Foxy-Network/issues"
+  },
   "workspaces": [
     "packages/*"
   ],
@@ -27,17 +35,22 @@
     "vpn",
     "web3",
     "foxy-finance",
-    "distributed-computing"
+    "distributed-computing",
+    "earn-crypto",
+    "bandwidth-sharing",
+    "decentralized-vpn",
+    "proxy",
+    "nodejs"
   ],
   "author": "Foxy Network Contributors",
   "license": "Apache-2.0",
   "dependencies": {
     "ethers": "^6.17.0"
   },
-  "engines": {
-    "node": ">=20"
-  },
   "overrides": {
     "tmp": "0.2.7"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
