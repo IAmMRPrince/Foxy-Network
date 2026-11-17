@@ -1,135 +1,34 @@
-import { spawn, execSync } from 'node:child_process';
-import crypto from 'node:crypto';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * Deterministic PRNG (Mulberry32) for redundant cross-node verification (epsilon < 1e-6)
- */
-export function createSeededPrng(seed = 1337) {
-  let state = (Number(seed) || 1337) >>> 0;
-  return function nextRandom() {
-    state = (state + 0x6D2B79F5) >>> 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const WORKLOAD_TYPES = new Set(['static', 'docker', 'python', 'node']);
+const ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
+// registry/repo:tag or @sha256 digest. Never starts with '-', so it can't be read as a flag.
+const IMAGE_RE = /^[a-z0-9][a-z0-9._/-]{0,127}(:[A-Za-z0-9._-]{1,127})?(@sha256:[a-f0-9]{64})?$/;
+const MAX_WORKLOADS = 12;
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-/**
- * Executes a Sovereign Black-Box Quantitative Task (Monte Carlo VaR/CVaR, DEX Arbitrage, Candle Audit)
- * Pure mathematical calculation over parameterized vectors — no proprietary strategy source code exposed.
- */
-export function executeSovereignQuantTask(task = {}) {
-  const startTime = Date.now();
-  const type = String(task.type || task.workloadType || 'MONTE_CARLO_VAR').toUpperCase();
-  const seed = Number(task.seed ?? 42069);
-  const rand = createSeededPrng(seed);
-
-  if (type === 'ARBITRAGE' || type === 'DEX_ARBITRAGE_SWEEP') {
-    const pools = task.parameters?.pools || ['ETH/USDC', 'FOXY/ETH', 'WBTC/USDT', 'SOL/USDC', 'ARB/USDC'];
-    const results = [];
-    for (const pool of pools) {
-      const basePrice = 100 + rand() * 2500;
-      const dexSpread = (rand() - 0.48) * 0.015;
-      const netSpreadPercent = parseFloat((dexSpread * 100).toFixed(4));
-      results.push({
-        pool,
-        basePrice: parseFloat(basePrice.toFixed(2)),
-        netSpreadPercent,
-        hasOpportunity: Math.abs(netSpreadPercent) > 0.4
-      });
-    }
-    const opportunitiesFound = results.filter(r => r.hasOpportunity).length;
-    const vectorString = results.map(r => `${r.pool}:${r.basePrice}:${r.netSpreadPercent}`).join('|');
-    const resultHash = crypto.createHash('sha256').update(`ARB:${seed}:${vectorString}`).digest('hex');
-
-    return {
-      taskId: task.taskId || `task-arb-${seed}`,
-      type: 'DEX_ARBITRAGE_SWEEP',
-      seed,
-      poolsEvaluated: pools.length,
-      opportunitiesFound,
-      computeUnitsRequired: 2,
-      data: results,
-      vector: results.map(r => r.netSpreadPercent),
-      resultHash,
-      durationMs: Date.now() - startTime
-    };
+/** Environment for child processes: nothing from the daemon's own secrets. */
+function childEnv(port) {
+  const env = { PORT: `${port}` };
+  for (const key of ['PATH', 'Path', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'LANG']) {
+    if (process.env[key]) env[key] = process.env[key];
   }
-
-  // Default: Monte Carlo VaR / CVaR 95% & 99% simulation
-  const params = task.parameters || {};
-  const initialPrice = Number(params.initialPrice || 67500.25);
-  const annualDrift = Number(params.annualDrift || 0.08);
-  const annualVol = Number(params.annualVol || 0.45);
-  const days = Number(params.days || 30);
-  const paths = Math.min(100000, Math.max(500, Number(params.paths || task.iterations || 10000)));
-
-  const dt = days / 365.0;
-  const driftTerm = (annualDrift - 0.5 * annualVol * annualVol) * dt;
-  const volTerm = annualVol * Math.sqrt(dt);
-
-  const pnlReturns = new Float64Array(paths);
-  let accumulatedVolatility = 0;
-
-  for (let i = 0; i < paths; i++) {
-    const u1 = Math.max(1e-12, rand());
-    const u2 = rand();
-    const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-    accumulatedVolatility += Math.abs(z0);
-    const terminalPrice = initialPrice * Math.exp(driftTerm + volTerm * z0);
-    pnlReturns[i] = (terminalPrice - initialPrice) / initialPrice;
-  }
-
-  pnlReturns.sort();
-
-  const idx95 = Math.max(0, Math.floor(0.05 * paths));
-  const idx99 = Math.max(0, Math.floor(0.01 * paths));
-
-  const var95 = parseFloat((-pnlReturns[idx95] * initialPrice).toFixed(4));
-  const var99 = parseFloat((-pnlReturns[idx99] * initialPrice).toFixed(4));
-
-  let tailSum = 0;
-  const tailCount = Math.max(1, idx99);
-  for (let i = 0; i < tailCount; i++) {
-    tailSum += -pnlReturns[i] * initialPrice;
-  }
-  const cvar99 = parseFloat((tailSum / tailCount).toFixed(4));
-  const averageVolatilityFactor = parseFloat((accumulatedVolatility / paths).toFixed(4));
-  const computeUnitsRequired = Math.max(1, Math.round(paths / 5000));
-
-  const vector = [var95, var99, cvar99, averageVolatilityFactor];
-  const resultHash = crypto
-    .createHash('sha256')
-    .update(`MC:${seed}:${vector.map(v => v.toFixed(4)).join(':')}`)
-    .digest('hex');
-
-  return {
-    taskId: task.taskId || `task-mc-${seed}`,
-    type: 'DEFI_RISK_MONTE_CARLO',
-    seed,
-    iterations: paths,
-    paths,
-    initialPrice,
-    var95,
-    var99,
-    cvar99,
-    averageVolatilityFactor,
-    computeUnitsRequired,
-    vector,
-    resultHash,
-    durationMs: Date.now() - startTime
-  };
+  return env;
 }
 
 export class WorkloadEngine {
   constructor(options = {}) {
     this.basePort = options.basePort || 5100;
+    this.dataDir = options.dataDir || path.resolve(process.cwd(), '.foxy');
     this.currentPortOffset = 0;
     this.workloads = new Map(); // id -> { id, name, type, status, port, process, containerId, logs: [] }
     this.runtime = this.detectRuntime();
@@ -169,29 +68,110 @@ export class WorkloadEngine {
   }
 
   /**
-   * Executes a Sovereign Black-Box Quantitative Task on this node
+   * Publishes the operator's own Foxy Finance server through the tunnel.
+   * Only the daemon's startup code calls this (never the dashboard or the
+   * controller): it points at a local port and may launch a local program.
+   *
+   * If nothing answers on `port`, and `appDir` (or a sibling "FOXY FINANCE"
+   * folder) holds a FastAPI app, it is started with uvicorn.
    */
-  executeQuantWorkload(task = {}) {
-    return executeSovereignQuantTask(task);
+  async attachFoxyFinance({ port = 8000, appDir = null, subdomain = 'foxy-finance', foxDomain = null, quota = {} } = {}) {
+    const workload = {
+      id: 'foxy-finance-saas',
+      name: 'FOXY FINANCE SaaS',
+      type: 'foxy-finance',
+      subdomain,
+      foxDomain,
+      port,
+      status: 'STARTING',
+      startedAt: new Date().toISOString(),
+      logs: [],
+      process: null,
+      containerId: null,
+      quota
+    };
+    this.workloads.set(workload.id, workload);
+
+    const alreadyUp = await new Promise((resolve) => {
+      const req = http.get({ hostname: '127.0.0.1', port, path: '/', timeout: 1200 }, (res) => { res.resume(); resolve(true); });
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.on('error', () => resolve(false));
+    });
+
+    if (alreadyUp) {
+      this.appendLog(workload, `FOXY FINANCE detectado en 127.0.0.1:${port}.`);
+    } else {
+      const financeDir = this._resolveFoxyFinanceDir(appDir);
+      if (financeDir) {
+        const venvWin = path.join(financeDir, 'venv', 'Scripts', 'python.exe');
+        const venvUnix = path.join(financeDir, 'venv', 'bin', 'python');
+        const python = fs.existsSync(venvWin) ? venvWin
+          : fs.existsSync(venvUnix) ? venvUnix
+          : (process.platform === 'win32' ? 'python' : 'python3');
+
+        // Foxy Finance is the operator's own app and needs its own settings,
+        // but never the keys that sign for the whole network.
+        const env = { ...process.env, FASTAPI_PORT: `${port}`, PORT: `${port}` };
+        for (const key of ['FOXY_NETWORK_SECRET', 'FOXY_ADMIN_KEY', 'FOXY_ORACLE_PRIVATE_KEY', 'DEPLOYER_PRIVATE_KEY']) delete env[key];
+
+        this.appendLog(workload, `Iniciando FOXY FINANCE desde ${financeDir} en 127.0.0.1:${port}...`);
+        const child = spawn(python, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', `${port}`], { cwd: financeDir, env });
+        workload.process = child;
+        child.stdout.on('data', d => this.appendLog(workload, d.toString()));
+        child.stderr.on('data', d => this.appendLog(workload, d.toString()));
+        child.on('error', err => { this.appendLog(workload, `No se pudo iniciar FOXY FINANCE: ${err.message}`, true); workload.status = 'ERROR'; });
+        child.on('exit', code => { this.appendLog(workload, `Proceso FOXY FINANCE terminado (código ${code})`); workload.status = 'STOPPED'; });
+        await new Promise(r => setTimeout(r, 1500));
+      } else {
+        this.appendLog(workload, `Túnel preparado hacia 127.0.0.1:${port}; inicia FOXY FINANCE en ese puerto.`);
+      }
+    }
+
+    if (workload.status === 'STARTING') workload.status = 'RUNNING';
+    return workload;
+  }
+
+  _resolveFoxyFinanceDir(customAppDir) {
+    // The Foxy Finance project is expected next to this repository
+    const foxyRoot = path.resolve(MODULE_DIR, '..', '..', '..', '..');
+    const candidates = [
+      customAppDir,
+      path.join(foxyRoot, 'FOXY FINANCE'),
+      path.join(foxyRoot, 'FOXY FINAINCE'),
+      path.join(foxyRoot, 'foxy-finance')
+    ].filter(Boolean);
+    return candidates.find(dir => fs.existsSync(path.join(dir, 'main.py'))) || null;
   }
 
   /**
    * Spawns a workload based on its type
    */
   async spawnWorkload(config) {
-    const { id, name, type, image, scriptPath, staticDir, targetPort, quota = {} } = config;
-    const port = targetPort || this.allocatePort();
-    const cleanSubdomain = String(config.subdomain || id)
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '');
+    // Everything here may come from the network, so it is validated strictly.
+    // Workloads never run a script path or directory chosen by the caller.
+    const id = String(config.id || '').toLowerCase();
+    if (!ID_RE.test(id)) throw new Error('Identificador de carga inválido');
+    const type = config.type || 'static';
+    if (!WORKLOAD_TYPES.has(type)) throw new Error(`Tipo de carga no soportado: ${type}`);
+    const image = config.image || 'nginx:alpine';
+    if (type === 'docker' && !IMAGE_RE.test(image)) throw new Error('Nombre de imagen de contenedor inválido');
+    const name = String(config.name || id).replace(/[\u0000-\u001f<>]/g, '').slice(0, 80);
+    const subdomain = String(config.subdomain || id).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 63) || id;
+    const quota = config.quota || {};
+
+    const existing = this.workloads.get(id);
+    if (existing && (existing.status === 'RUNNING' || existing.status === 'STARTING')) return existing;
+    const active = Array.from(this.workloads.values()).filter(w => w.status === 'RUNNING' || w.status === 'STARTING');
+    if (active.length >= MAX_WORKLOADS) throw new Error('Límite de cargas de trabajo alcanzado en este nodo');
+
+    const port = this.allocatePort();
 
     const workload = {
       id,
-      name: name || id,
-      type: type || 'static',
-      subdomain: cleanSubdomain,
+      name,
+      type,
+      subdomain,
       port,
-      foxDomain: config.foxDomain || null,
       status: 'STARTING',
       startedAt: new Date().toISOString(),
       logs: [],
@@ -208,15 +188,13 @@ export class WorkloadEngine {
           throw new Error('El motor Docker/Podman no está activo en este equipo. Usa el modo nativo (Python, Node o Static).');
         }
         await this._startDockerWorkload(workload, image);
-      } else if (type === 'foxy-finance') {
-        await this._startFoxyFinanceWorkload(workload, config.appDir);
       } else if (type === 'python') {
-        await this._startPythonWorkload(workload, scriptPath, staticDir);
+        await this._startPythonWorkload(workload);
       } else if (type === 'node') {
-        await this._startNodeWorkload(workload, scriptPath);
+        await this._startNodeWorkload(workload);
       } else {
         // Default: Static server
-        await this._startStaticWorkload(workload, staticDir);
+        await this._startStaticWorkload(workload);
       }
 
       workload.status = 'RUNNING';
@@ -229,67 +207,12 @@ export class WorkloadEngine {
     }
   }
 
-  _resolveFoxyFinanceDir(customAppDir) {
-    if (customAppDir && fs.existsSync(customAppDir)) return customAppDir;
-    const foxyRoot = path.resolve(__dirname, '..', '..', '..', '..');
-    const candidates = [
-      path.join(foxyRoot, 'FOXY FINANCE'),
-      path.join(foxyRoot, 'FOXY FINAINCE'),
-      path.join(foxyRoot, 'foxy-finance')
-    ];
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) return candidate;
-    }
-    return candidates[0];
-  }
-
-  _startFoxyFinanceWorkload(workload, customAppDir) {
-    return new Promise((resolve) => {
-      const financeDir = this._resolveFoxyFinanceDir(customAppDir);
-      const port = workload.port || 8000;
-
-      // Check if port 8000 is already listening (e.g. FOXY FINANCE already started externally)
-      const checkReq = http.get({ hostname: '127.0.0.1', port, path: '/api/health', timeout: 1200 }, (res) => {
-        res.resume();
-        this.appendLog(workload, `FOXY FINANCE detectado activo en 127.0.0.1:${port} (HTTP ${res.statusCode}). Vinculando túnel https://www.foxyfianance.fox...`);
-        resolve();
-      });
-
-      checkReq.on('error', () => {
-        // Not running yet; spawn FOXY FINANCE FastAPI server if directory exists
-        if (fs.existsSync(financeDir) && fs.existsSync(path.join(financeDir, 'main.py'))) {
-          const venvPyWin = path.join(financeDir, 'venv', 'Scripts', 'python.exe');
-          const venvPyUnix = path.join(financeDir, 'venv', 'bin', 'python');
-          const pythonExec = fs.existsSync(venvPyWin)
-            ? venvPyWin
-            : (fs.existsSync(venvPyUnix) ? venvPyUnix : 'python');
-
-          this.appendLog(workload, `Iniciando servidor FOXY FINANCE SaaS en 127.0.0.1:${port} para https://www.foxyfianance.fox...`);
-
-          const child = spawn(pythonExec, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', `${port}`], {
-            cwd: financeDir,
-            env: { ...process.env, FASTAPI_PORT: `${port}`, PORT: `${port}` }
-          });
-
-          workload.process = child;
-          child.stdout.on('data', d => this.appendLog(workload, d.toString()));
-          child.stderr.on('data', d => this.appendLog(workload, d.toString()));
-          child.on('exit', code => {
-            this.appendLog(workload, `Proceso FOXY FINANCE terminado (código ${code})`);
-          });
-          setTimeout(resolve, 1500);
-        } else {
-          this.appendLog(workload, `Proxy reverso preparado hacia 127.0.0.1:${port} para https://www.foxyfianance.fox`);
-          resolve();
-        }
-      });
-    });
-  }
-
   _startDockerWorkload(workload, image) {
     const cli = this.runtime.type === 'PODMAN' ? 'podman' : 'docker';
-    const cpuLimit = workload.quota.maxCpuCores ? `--cpus=${workload.quota.maxCpuCores}` : '--cpus=1';
-    const memLimit = workload.quota.maxRamMb ? `-m=${workload.quota.maxRamMb}m` : '-m=512m';
+    const cpus = Number(workload.quota.maxCpuCores) > 0 ? Number(workload.quota.maxCpuCores) : 1;
+    const ramMb = Number(workload.quota.maxRamMb) > 0 ? Math.floor(Number(workload.quota.maxRamMb)) : 512;
+    const cpuLimit = `--cpus=${cpus}`;
+    const memLimit = `-m=${ramMb}m`;
     const containerName = `foxy-${workload.id}`;
 
     // docker run -d --rm --name foxy-xyz --cpus=1 -m=512m -p 5101:80 nginx:alpine
@@ -297,13 +220,17 @@ export class WorkloadEngine {
       'run', '-d', '--rm',
       '--name', containerName,
       cpuLimit, memLimit,
-      '-p', `${workload.port}:80`,
-      image || 'nginx:alpine'
+      '--pids-limit', '256',
+      '--security-opt', 'no-new-privileges',
+      // Published on loopback only: traffic reaches it through the tunnel.
+      '-p', `127.0.0.1:${workload.port}:80`,
+      image
     ];
 
     return new Promise((resolve, reject) => {
       this.appendLog(workload, `Ejecutando: ${cli} ${args.join(' ')}`);
-      const child = spawn(cli, args, { shell: true });
+      const child = spawn(cli, args, { shell: false });
+      child.on('error', reject);
 
       let out = '';
       let err = '';
@@ -322,27 +249,23 @@ export class WorkloadEngine {
     });
   }
 
-  _startPythonWorkload(workload, scriptPath, staticDir) {
+  /** Private directory holding the placeholder page served by a workload. */
+  _prepareWebRoot(workload) {
+    const dir = path.join(this.dataDir, 'www', workload.id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'index.html'), this._renderPage(workload), 'utf-8');
+    return dir;
+  }
+
+  _startPythonWorkload(workload) {
     return new Promise((resolve) => {
-      let args = [];
-      let cwd = process.cwd();
+      const targetDir = this._prepareWebRoot(workload);
+      const args = ['-m', 'http.server', `${workload.port}`, '--bind', '127.0.0.1', '--directory', targetDir];
+      const bin = process.platform === 'win32' ? 'python' : 'python3';
 
-      if (scriptPath && fs.existsSync(scriptPath)) {
-        args = [scriptPath, '--port', `${workload.port}`];
-        cwd = path.dirname(scriptPath);
-      } else {
-        // Launch Python's built-in HTTP server serving staticDir or a sample dir
-        const targetDir = staticDir && fs.existsSync(staticDir) ? staticDir : __dirname;
-        args = ['-m', 'http.server', `${workload.port}`, '--directory', targetDir];
-        cwd = targetDir;
-      }
+      this.appendLog(workload, `Lanzando microservicio Python: ${bin} ${args.join(' ')}`);
 
-      this.appendLog(workload, `Lanzando microservicio Python: python ${args.join(' ')}`);
-
-      const child = spawn('python', args, {
-        cwd,
-        env: { ...process.env, PORT: `${workload.port}` }
-      });
+      const child = spawn(bin, args, { cwd: targetDir, env: childEnv(workload.port) });
 
       workload.process = child;
 
@@ -363,36 +286,25 @@ export class WorkloadEngine {
     });
   }
 
-  _startNodeWorkload(workload, scriptPath) {
+  _startNodeWorkload(workload) {
     return new Promise((resolve) => {
-      let args = [];
-      let cwd = process.cwd();
-
-      if (scriptPath && fs.existsSync(scriptPath)) {
-        args = [scriptPath];
-        cwd = path.dirname(scriptPath);
-      } else {
-        // Fallback simple inline Node HTTP server
-        args = ['-e', `
-          import http from 'node:http';
-          const server = http.createServer((req, res) => {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              app: '${workload.name}',
-              nodeRuntime: process.version,
-              port: ${workload.port},
-              timestamp: new Date().toISOString()
-            }, null, 2));
-          });
-          server.listen(${workload.port}, '127.0.0.1');
-        `];
-      }
+      const cwd = this._prepareWebRoot(workload);
+      // The app name travels as an argument, never interpolated into code.
+      const args = ['--input-type=module', '-e', `
+        import http from 'node:http';
+        const [name, port] = process.argv.slice(1);
+        http.createServer((req, res) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ app: name, nodeRuntime: process.version, port: Number(port), timestamp: new Date().toISOString() }, null, 2));
+        }).listen(Number(port), '127.0.0.1');
+      `, workload.name, `${workload.port}`];
 
       this.appendLog(workload, `Lanzando servidor Node.js en puerto ${workload.port}`);
 
-      const child = spawn('node', args, {
-        cwd,
-        env: { ...process.env, PORT: `${workload.port}` }
+      const child = spawn(process.execPath, args, { cwd, env: childEnv(workload.port) });
+      child.on('error', err => {
+        this.appendLog(workload, `Error en proceso Node.js: ${err.message}`, true);
+        workload.status = 'ERROR';
       });
 
       workload.process = child;
@@ -409,42 +321,45 @@ export class WorkloadEngine {
     });
   }
 
-  _startStaticWorkload(workload, staticDir) {
-    return new Promise((resolve) => {
-      // Create a built-in HTTP server for this static workload
+  _renderPage(workload) {
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(workload.name)} — Foxy Cloud</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0b0f19; color: #f0f4fc; padding: 3rem; text-align: center; }
+    .box { background: #151d30; border: 1px solid #232f4e; border-radius: 12px; padding: 2rem; max-width: 500px; margin: auto; }
+    h1 { color: #ff6b35; margin-bottom: 0.5rem; }
+    code { background: #080c14; padding: 2px 6px; border-radius: 4px; color: #00f2fe; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>🚀 ${escapeHtml(workload.name)}</h1>
+    <p>Aplicación web servida desde un nodo donante descentralizado.</p>
+    <div style="margin-top:1.5rem; font-size:0.9rem; text-align:left; color:#8ba0c8">
+      <div><strong>ID de Carga:</strong> <code>${escapeHtml(workload.id)}</code></div>
+      <div><strong>Subdominio Virtual:</strong> <code>${escapeHtml(workload.subdomain)}</code></div>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  _startStaticWorkload(workload) {
+    return new Promise((resolve, reject) => {
+      const page = this._renderPage(workload);
       const server = http.createServer((req, res) => {
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
+          'X-Content-Type-Options': 'nosniff',
           'X-Foxy-Workload': workload.id
         });
-        res.end(`
-          <!DOCTYPE html>
-          <html lang="es">
-          <head>
-            <meta charset="UTF-8">
-            <title>${workload.name} — Foxy Cloud</title>
-            <style>
-              body { font-family: system-ui, sans-serif; background: #0b0f19; color: #f0f4fc; padding: 3rem; text-align: center; }
-              .box { background: #151d30; border: 1px solid #232f4e; border-radius: 12px; padding: 2rem; max-width: 500px; margin: auto; }
-              h1 { color: #ff6b35; margin-bottom: 0.5rem; }
-              code { background: #080c14; padding: 2px 6px; border-radius: 4px; color: #00f2fe; }
-            </style>
-          </head>
-          <body>
-            <div class="box">
-              <h1>🚀 ${workload.name}</h1>
-              <p>Aplicación web servida desde un nodo donante descentralizado.</p>
-              <div style="margin-top:1.5rem; font-size:0.9rem; text-align:left; color:#8ba0c8">
-                <div><strong>ID de Carga:</strong> <code>${workload.id}</code></div>
-                <div><strong>Puerto Local:</strong> <code>:${workload.port}</code></div>
-                <div><strong>Subdominio Virtual:</strong> <code>${workload.subdomain}</code></div>
-                <div><strong>Hora de Servido:</strong> ${new Date().toLocaleTimeString()}</div>
-              </div>
-            </div>
-          </body>
-          </html>
-        `);
+        res.end(page);
       });
+      server.once('error', reject);
 
       server.listen(workload.port, '127.0.0.1', () => {
         workload.serverInstance = server;
@@ -463,7 +378,7 @@ export class WorkloadEngine {
     if (workload.containerId) {
       const cli = this.runtime.type === 'PODMAN' ? 'podman' : 'docker';
       try {
-        execSync(`${cli} stop foxy-${workload.id}`, { stdio: 'ignore' });
+        execFileSync(cli, ['stop', `foxy-${workload.id}`], { stdio: 'ignore' });
         this.appendLog(workload, 'Contenedor OCI detenido.');
       } catch (e) {
         // Ignore error
