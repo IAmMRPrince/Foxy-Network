@@ -231,7 +231,7 @@ test('full stack', async (t) => {
     });
 
     await t.test('the dVPN cannot be used to reach the donor machine or its network', async () => {
-      const vpn = new FoxyVpnClient({ port: 0, gatewayUrl: `ws://127.0.0.1:${gwWs}` });
+      const vpn = new FoxyVpnClient({ quiet: true, port: 0, gatewayUrl: `ws://127.0.0.1:${gwWs}` });
       await vpn.start();
       try {
         const viaProxy = (target) => new Promise((resolve, reject) => {
@@ -292,7 +292,7 @@ test('full stack', async (t) => {
       assert.equal(ff.target, 'foxy-finance');
 
       // Through the local proxy, .fox names reach the gateway without DNS
-      const vpn = new FoxyVpnClient({ port: 0, gatewayUrl: `ws://127.0.0.1:${gwWs}`, foxHttpPort: gwHttp, foxHttpsPort: gwHttps });
+      const vpn = new FoxyVpnClient({ quiet: true, port: 0, gatewayUrl: `ws://127.0.0.1:${gwWs}`, foxHttpPort: gwHttp, foxHttpsPort: gwHttps });
       await vpn.start();
       try {
         const proxied = await new Promise((resolve, reject) => {

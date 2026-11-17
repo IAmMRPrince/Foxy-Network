@@ -27,6 +27,8 @@ export class FoxyVpnClient {
   constructor(options = {}) {
     this.port = options.port ?? PROXY_PORT;
     this.gatewayUrl = options.gatewayUrl || GATEWAY_TUNNEL_URL;
+    // `quiet: true` silences progress messages (errors still go to stderr)
+    this.log = options.quiet ? () => {} : (...args) => console.log(...args);
     this.foxGateway = {
       host: options.foxGatewayHost || FOX_GATEWAY_HOST,
       httpPort: options.foxHttpPort || GATEWAY_HTTP_PORT,
@@ -53,11 +55,11 @@ export class FoxyVpnClient {
 
   connectToGateway() {
     return new Promise((resolve) => {
-      console.log(`[dVPN Client 🔒] Conectando con la red Foxy en ${this.gatewayUrl}...`);
+      this.log(`[dVPN Client 🔒] Conectando con la red Foxy en ${this.gatewayUrl}...`);
       this.ws = new WebSocket(this.gatewayUrl);
 
       this.ws.on('open', () => {
-        console.log(`[dVPN Client 🔒] ✅ Conectado a la red de túneles dVPN.`);
+        this.log(`[dVPN Client 🔒] ✅ Conectado a la red de túneles dVPN.`);
         this.ws.send(JSON.stringify({
           type: 'VPN_CLIENT_REGISTER',
           clientId: `vpn-client-${crypto.randomBytes(4).toString('hex')}`
@@ -78,7 +80,7 @@ export class FoxyVpnClient {
         for (const sessionId of Array.from(this.sessions.keys())) this.endSession(sessionId);
         resolve(); // a failed first attempt must not leave start() waiting forever
         if (this.stopped) return;
-        console.log(`[dVPN Client 🔒] Conexión de túnel cerrada. Reintentando en 3s...`);
+        this.log(`[dVPN Client 🔒] Conexión de túnel cerrada. Reintentando en 3s...`);
         setTimeout(() => { if (!this.stopped) this.connectToGateway(); }, 3000);
       });
 
@@ -272,7 +274,7 @@ export class FoxyVpnClient {
     return new Promise((resolve) => {
       this.server.listen(this.port, '127.0.0.1', () => {
         this.port = this.server.address().port;
-        console.log(`
+        this.log(`
 🛡️ ========================================================
        FOXY NETWORK — DECENTRALIZED ENCRYPTED VPN (dVPN)
 ========================================================
