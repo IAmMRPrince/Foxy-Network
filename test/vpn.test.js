@@ -127,7 +127,7 @@ test('the local proxy starts even when the gateway is not up yet', async (t) => 
   const deadPort = closed.address().port;
   await new Promise(r => closed.close(r));
 
-  const client = new FoxyVpnClient({ port: 0, gatewayUrl: `ws://127.0.0.1:${deadPort}` });
+  const client = new FoxyVpnClient({ quiet: true, port: 0, gatewayUrl: `ws://127.0.0.1:${deadPort}` });
   t.after(() => client.stop());
   await client.start(); // must return instead of waiting for a connection that never opens
 
