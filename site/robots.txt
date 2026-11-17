@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://iammrprince.github.io/Foxy-Network/sitemap.xml
