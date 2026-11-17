@@ -45,8 +45,10 @@ export class FoxyVpnClient {
   }
 
   async start() {
-    await this.connectToGateway();
+    // The local proxy comes up first and stays up: if the gateway is not
+    // reachable yet, the connection keeps retrying in the background.
     await this.startLocalProxy();
+    await this.connectToGateway();
   }
 
   connectToGateway() {
@@ -74,6 +76,7 @@ export class FoxyVpnClient {
       this.ws.on('close', () => {
         // Sessions cannot survive a gateway reconnect: their relay is gone.
         for (const sessionId of Array.from(this.sessions.keys())) this.endSession(sessionId);
+        resolve(); // a failed first attempt must not leave start() waiting forever
         if (this.stopped) return;
         console.log(`[dVPN Client 🔒] Conexión de túnel cerrada. Reintentando en 3s...`);
         setTimeout(() => { if (!this.stopped) this.connectToGateway(); }, 3000);

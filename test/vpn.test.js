@@ -4,6 +4,8 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { CryptoTunnel } from '../packages/foxy-vpn/src/crypto-tunnel.js';
 import { VpnRelay, isPublicAddress } from '../packages/foxy-vpn/src/relay.js';
+import { FoxyVpnClient } from '../packages/foxy-vpn/src/client.js';
+import http from 'node:http';
 
 test('only public addresses are considered routable', () => {
   for (const addr of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254',
@@ -116,4 +118,24 @@ test('data flows encrypted in both directions through the relay', async (t) => {
   const dup = connect(relay, { host: '93.184.216.34', port: echo.address().port, sessionId: session.sessionId });
   await dup.done;
   assert.equal((await dup.next('VPN_CONNECTED')).type, 'VPN_ERROR');
+});
+
+test('the local proxy starts even when the gateway is not up yet', async (t) => {
+  // A port with nothing listening stands in for a gateway that has not started
+  const closed = net.createServer();
+  await new Promise(r => closed.listen(0, '127.0.0.1', r));
+  const deadPort = closed.address().port;
+  await new Promise(r => closed.close(r));
+
+  const client = new FoxyVpnClient({ port: 0, gatewayUrl: `ws://127.0.0.1:${deadPort}` });
+  t.after(() => client.stop());
+  await client.start(); // must return instead of waiting for a connection that never opens
+
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: client.port, method: 'CONNECT', path: 'example.com:443' });
+    req.on('connect', (res, socket) => { socket.destroy(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(status, 502); // proxy is listening and reports the network as unavailable
 });
